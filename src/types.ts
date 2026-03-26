@@ -64,4 +64,5 @@ export interface Env {
   TURNSTILE_SECRET_KEY: string;
   GITHUB_TOKEN: string;
   TURNSTILE_SITE_KEY: string;
+  REINDEX_SECRET: string;
 }

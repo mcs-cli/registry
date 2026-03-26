@@ -64,8 +64,12 @@ async function handleApiRoute(
     return handleSubmit(request, env);
   }
 
-  // POST /api/reindex (manual trigger — for seeding and scheduled reindex via GitHub Actions)
+  // POST /api/reindex (manual trigger — protected by shared secret)
   if (path === "/api/reindex" && request.method === "POST") {
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader || authHeader !== `Bearer ${env.REINDEX_SECRET}`) {
+      return jsonResponse({ error: "Unauthorized" }, 401);
+    }
     ctx.waitUntil(
       seedFromTechpacksJson(env).then(() => handleReindex(env))
     );

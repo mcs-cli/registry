@@ -1,3 +1,19 @@
+function copyInstall(e, cmd) {
+  e.stopPropagation();
+  e.preventDefault();
+  navigator.clipboard.writeText(cmd).then(() => {
+    const btn = e.currentTarget;
+    const textEl = btn.querySelector('.install-text');
+    const original = textEl.textContent;
+    textEl.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      textEl.textContent = original;
+      btn.classList.remove('copied');
+    }, 1500);
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   // -- Fade-in observer (same as main site) --
   const observer = new IntersectionObserver((entries) => {
@@ -144,26 +160,34 @@ document.addEventListener('DOMContentLoaded', () => {
     const dotColor = getDotColor(pack.components);
     const updated = timeAgo(pack.pushedAt);
     const banner = renderBanner(pack.status);
+    const ownerRepo = pack.repoUrl.replace('https://github.com/', '');
+    const installCmd = `mcs pack add ${ownerRepo}`;
 
     return `
-      <a href="${escapeHtml(pack.repoUrl)}" target="_blank" rel="noopener" class="pack-card">
+      <div class="pack-card" data-repo="${escapeHtml(pack.repoUrl)}">
         ${banner}
-        <div class="pack-card-header">
-          <span class="pack-dot pack-dot--${dotColor}"></span>
-          <span class="pack-card-name">${escapeHtml(pack.displayName)}</span>
-          <span class="star-count">
-            <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-            ${pack.stargazerCount}
-          </span>
-        </div>
-        <p class="pack-card-desc">${escapeHtml(pack.description)}</p>
-        ${pack.author ? `<div class="pack-card-author">by ${escapeHtml(pack.author)}</div>` : ''}
-        <div class="pack-card-badges">${badges}</div>
+        <a href="${escapeHtml(pack.repoUrl)}" target="_blank" rel="noopener" class="pack-card-link">
+          <div class="pack-card-header">
+            <span class="pack-dot pack-dot--${dotColor}"></span>
+            <span class="pack-card-name">${escapeHtml(pack.displayName)}</span>
+            <span class="star-count">
+              <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+              ${pack.stargazerCount}
+            </span>
+          </div>
+          <p class="pack-card-desc">${escapeHtml(pack.description)}</p>
+          ${pack.author ? `<div class="pack-card-author">by ${escapeHtml(pack.author)}</div>` : ''}
+          <div class="pack-card-badges">${badges}</div>
+        </a>
         <div class="pack-card-meta">
-          <span class="pack-card-install">mcs pack add ${escapeHtml(pack.identifier)}</span>
           <span class="pack-card-updated">Updated ${updated}</span>
+          <button class="pack-card-copy" onclick="copyInstall(event, '${escapeHtml(installCmd)}')" aria-label="Copy install command">
+            <span class="copy-tooltip">${escapeHtml(installCmd)}</span>
+            <svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
+            <span class="install-text">Copy</span>
+          </button>
         </div>
-      </a>
+      </div>
     `;
   }
 

@@ -49,6 +49,7 @@ const SHORTHAND_TYPE_MAP: Record<string, string> = {
   brew: "brewPackage",
   mcp: "mcpServer",
   plugin: "plugin",
+  shell: "", // shell shorthand requires explicit type field
   hook: "hookFile",
   command: "command",
   skill: "skill",
@@ -57,9 +58,13 @@ const SHORTHAND_TYPE_MAP: Record<string, string> = {
   gitignore: "configuration",
 };
 
-const VALID_SCOPES = new Set(["user", "project"]);
-const VALID_PROMPT_TYPES = new Set(["slash", "skill"]);
-const VALID_DOCTOR_CHECK_TYPES = new Set(["shell", "file"]);
+const VALID_SCOPES = new Set(["local", "user", "project"]);
+const VALID_PROMPT_TYPES = new Set(["fileDetect", "input", "select", "script"]);
+const VALID_DOCTOR_CHECK_TYPES = new Set([
+  "commandExists", "fileExists", "directoryExists",
+  "fileContains", "fileNotContains", "shellScript",
+  "hookEventExists", "settingsKeyEquals",
+]);
 
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
@@ -324,7 +329,11 @@ function extractPackData(
 function resolveComponentType(comp: Record<string, unknown>): string | null {
   // Check shorthand keys first
   for (const [key, type] of Object.entries(SHORTHAND_TYPE_MAP)) {
-    if (comp[key] !== undefined) return type;
+    if (comp[key] !== undefined) {
+      // shell shorthand requires explicit type field
+      if (type === "") return typeof comp.type === "string" ? comp.type : null;
+      return type;
+    }
   }
 
   // Check explicit type field
