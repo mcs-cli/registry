@@ -73,7 +73,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;o
 /* ==========================================================================
    Registry — Hero
    ========================================================================== */
-.registry-hero{padding:calc(56px + clamp(4rem,10vw,8rem)) 0 clamp(3rem,8vw,6rem);position:relative;overflow:hidden;border-bottom:1px solid var(--border)}
+.registry-hero{padding:calc(56px + clamp(4rem,10vw,8rem)) 0 clamp(1.5rem,4vw,2.5rem);position:relative;overflow:hidden}
 .registry-hero::before{content:'';position:absolute;top:-400px;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(ellipse at center,var(--purple-glow) 0%,transparent 70%);pointer-events:none;z-index:0}
 .registry-hero .container{position:relative;z-index:1}
 .registry-hero .section-title{font-size:clamp(2rem,1.2rem + 3vw,3.25rem)}
@@ -96,7 +96,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;o
 /* ==========================================================================
    Registry — Packs Meta (count + sort)
    ========================================================================== */
-.packs-meta{display:flex;flex-direction:column;align-items:center;gap:.5rem;margin-bottom:1.5rem}
+.packs-meta{display:flex;flex-direction:column;align-items:center;gap:.5rem;margin-bottom:1rem;padding-top:.5rem}
 .pack-count{font-family:var(--mono);font-size:.75rem;color:var(--text-muted);min-height:1.1em}
 .sort-controls{display:flex;gap:.5rem}
 .sort-btn{display:inline-flex;align-items:center;gap:.35rem;padding:.3rem .6rem;border-radius:var(--radius-sm);border:1px solid transparent;background:none;color:var(--text-muted);font-family:var(--mono);font-size:.72rem;font-weight:500;cursor:pointer;transition:all var(--transition)}
