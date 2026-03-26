@@ -11,11 +11,71 @@ jobs:
     steps:
       - name: Trigger reindex
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+          response=$(curl -s -w "\n%{http_code}" -X POST \
             -H "Authorization: Bearer ${{ secrets.REINDEX_SECRET }}" \
             "${{ secrets.REGISTRY_URL }}/api/reindex")
-          echo "Response: $response"
-          if [ "$response" != "200" ]; then
-            echo "Reindex failed with status $response"
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Status: $http_code"
+          echo "$body" | jq . 2>/dev/null || echo "$body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::Reindex failed with status $http_code"
+            cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ## ❌ Reindex Failed
+
+          **HTTP Status:** $http_code
+
+          \`\`\`
+          $body
+          \`\`\`
+          EOF
             exit 1
+          fi
+
+          # Parse response fields
+          total=$(echo "$body" | jq -r '.total // 0')
+          updated=$(echo "$body" | jq -r '.updated // 0')
+          unchanged=$(echo "$body" | jq -r '.unchanged // 0')
+          unavailable=$(echo "$body" | jq -r '.unavailable // 0')
+          invalid=$(echo "$body" | jq -r '.invalid // 0')
+          errors=$(echo "$body" | jq -r '.errors // []')
+          error_count=$(echo "$errors" | jq -r 'length')
+
+          # Status emoji
+          if [ "$error_count" != "0" ] || [ "$unavailable" != "0" ] || [ "$invalid" != "0" ]; then
+            status_icon="⚠️"
+          else
+            status_icon="✅"
+          fi
+
+          # Build summary
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ## $status_icon Reindex Report
+
+          | Metric | Count |
+          |--------|-------|
+          | Total packs | $total |
+          | Updated | $updated |
+          | Unchanged | $unchanged |
+          | Unavailable | $unavailable |
+          | Invalid | $invalid |
+          | Errors | $error_count |
+          EOF
+
+          # Add errors detail if any
+          if [ "$error_count" != "0" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Errors" >> "$GITHUB_STEP_SUMMARY"
+            echo "$errors" | jq -r '.[] | "- \(.)"' >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Reindex completed with $error_count errors"
+          fi
+
+          # Add warnings for unavailable/invalid
+          if [ "$unavailable" != "0" ]; then
+            echo "::warning::$unavailable pack(s) are unavailable"
+          fi
+          if [ "$invalid" != "0" ]; then
+            echo "::warning::$invalid pack(s) have invalid manifests"
           fi
