@@ -99,8 +99,6 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;o
 #packs{padding-top:clamp(1rem,3vw,2rem)}
 .registry-hero+#packs{border-top:none}
 .packs-meta{display:flex;align-items:center;justify-content:center;margin-bottom:1rem}
-.pack-count{font-family:var(--mono);font-size:.72rem;color:var(--text-muted);margin-left:.75rem}
-.pack-count:empty{display:none}
 .sort-controls{display:flex;gap:.5rem}
 .sort-btn{display:inline-flex;align-items:center;gap:.35rem;padding:.3rem .6rem;border-radius:var(--radius-sm);border:1px solid transparent;background:none;color:var(--text-muted);font-family:var(--mono);font-size:.72rem;font-weight:500;cursor:pointer;transition:all var(--transition)}
 .sort-btn:hover{color:var(--text-secondary)}

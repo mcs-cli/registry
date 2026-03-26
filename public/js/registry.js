@@ -52,7 +52,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const packsGrid = document.getElementById('packs-grid');
   const packsEmpty = document.getElementById('packs-empty');
   const packsLoading = document.getElementById('packs-loading');
-  const packCount = document.getElementById('pack-count');
   const sortBtns = document.querySelectorAll('.sort-btn');
   const submitForm = document.getElementById('submit-form');
   const submitResult = document.getElementById('submit-result');
@@ -162,7 +161,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         packsGrid.style.display = 'none';
         packsEmpty.style.display = 'block';
-        packCount.textContent = query ? '0 results' : '';
         isFirstLoad = false;
         return;
       }
@@ -176,8 +174,6 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         await transitionCards(newHtml);
       }
-
-      packCount.textContent = query ? `${data.total} result${data.total !== 1 ? 's' : ''}` : '';
 
       // Animate total registered count on first load
       if (!statsAnimated && data.totalRegistered) {
