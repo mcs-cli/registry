@@ -130,7 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
     packsLoading.style.display = 'grid';
 
     try {
-      const params = new URLSearchParams({ sort, limit: '50' });
+      const params = new URLSearchParams({ sort, limit: '24' });
       if (query) params.set('q', query);
 
       const response = await fetch(`/api/packs?${params}`);
