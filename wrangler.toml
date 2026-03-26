@@ -22,6 +22,7 @@ TURNSTILE_SITE_KEY = "0x4AAAAAACwagkLiWQhtpD1G"
 # Secrets (set via `npx wrangler secret put <NAME>`):
 #   TURNSTILE_SECRET_KEY
 #   GITHUB_TOKEN
+#   REINDEX_SECRET
 
 # Scheduled reindex: use GitHub Actions to POST /api/reindex every 6 hours
 # Pages does not support cron triggers directly
