@@ -1,0 +1,27 @@
+name = "mcs-registry"
+compatibility_date = "2024-12-01"
+pages_build_output_dir = "public"
+
+# KV Namespace bindings — fill in IDs after running:
+#   npx wrangler kv namespace create PACKS
+#   npx wrangler kv namespace create RATE_LIMIT
+[[kv_namespaces]]
+binding = "PACKS"
+id = "56f0570a5cf146d5a17f0a8edbceefd3"
+preview_id = "bf1e1a5f11a447a78ff6d42ca9ca8d4c"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "125edb34347d441ea651a19a19d8a014"
+preview_id = "3907948952d34cb89dfb47ba3bafd7b4"
+
+# Public vars
+[vars]
+TURNSTILE_SITE_KEY = "0x4AAAAAACwagkLiWQhtpD1G"
+
+# Secrets (set via `npx wrangler secret put <NAME>`):
+#   TURNSTILE_SECRET_KEY
+#   GITHUB_TOKEN
+
+# Scheduled reindex: use GitHub Actions to POST /api/reindex every 6 hours
+# Pages does not support cron triggers directly

@@ -1,0 +1,346 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MCS Tech Pack Manifest",
+  "description": "Schema for techpack.yaml — the manifest file for MCS tech packs",
+  "type": "object",
+  "required": ["schemaVersion", "identifier", "displayName", "description"],
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "Manifest schema version. Must be 1."
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Unique pack identifier. Lowercase alphanumeric and hyphens only."
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable pack name."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Short description of the pack."
+    },
+    "author": {
+      "type": "string",
+      "description": "Pack author name."
+    },
+    "minMCSVersion": {
+      "type": "string",
+      "description": "Minimum MCS version required (e.g., '2026.3.22')."
+    },
+    "components": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/component" },
+      "description": "List of installable components."
+    },
+    "templates": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/template" },
+      "description": "CLAUDE.local.md template contributions."
+    },
+    "prompts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/prompt" },
+      "description": "Interactive prompts run during mcs sync."
+    },
+    "configureProject": {
+      "$ref": "#/definitions/configureProject",
+      "description": "Shell script hook run during project configuration."
+    },
+    "supplementaryDoctorChecks": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/doctorCheck" },
+      "description": "Pack-level doctor checks."
+    }
+  },
+  "definitions": {
+    "component": {
+      "type": "object",
+      "required": ["id", "description"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short component ID. Must not contain dots."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Human-readable name."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": ["mcpServer", "plugin", "skill", "hookFile", "command", "agent", "brewPackage", "configuration"]
+        },
+        "dependencies": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "isRequired": {
+          "type": "boolean"
+        },
+        "hookEvent": {
+          "type": "string",
+          "enum": [
+            "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
+            "PostToolUse", "PostToolUseFailure", "Notification",
+            "SubagentStart", "SubagentStop", "Stop", "StopFailure",
+            "TeammateIdle", "TaskCompleted", "ConfigChange", "InstructionsLoaded",
+            "WorktreeCreate", "WorktreeRemove", "PreCompact", "PostCompact",
+            "SessionEnd", "Elicitation", "ElicitationResult"
+          ]
+        },
+        "hookTimeout": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hookAsync": {
+          "type": "boolean"
+        },
+        "hookStatusMessage": {
+          "type": "string"
+        },
+        "doctorChecks": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/doctorCheck" }
+        },
+        "brew": {
+          "type": "string",
+          "description": "Shorthand: Homebrew package name."
+        },
+        "mcp": {
+          "$ref": "#/definitions/mcpShorthand",
+          "description": "Shorthand: MCP server configuration."
+        },
+        "plugin": {
+          "type": "string",
+          "description": "Shorthand: Plugin name (e.g., 'name@org/repo')."
+        },
+        "shell": {
+          "type": "string",
+          "description": "Shorthand: Shell command to execute."
+        },
+        "hook": {
+          "$ref": "#/definitions/copyFileShorthand",
+          "description": "Shorthand: Hook file to copy."
+        },
+        "command": {
+          "$ref": "#/definitions/copyFileShorthand",
+          "description": "Shorthand: Command file to copy."
+        },
+        "skill": {
+          "$ref": "#/definitions/copyFileShorthand",
+          "description": "Shorthand: Skill directory to copy."
+        },
+        "agent": {
+          "$ref": "#/definitions/copyFileShorthand",
+          "description": "Shorthand: Agent file to copy."
+        },
+        "settingsFile": {
+          "type": "string",
+          "description": "Shorthand: Path to settings JSON file to merge."
+        },
+        "gitignore": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Shorthand: Gitignore entries to add."
+        },
+        "installAction": {
+          "$ref": "#/definitions/installAction",
+          "description": "Verbose: Explicit install action."
+        }
+      }
+    },
+    "mcpShorthand": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "command": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "url": { "type": "string" },
+        "scope": {
+          "type": "string",
+          "enum": ["local", "user", "project"]
+        }
+      }
+    },
+    "copyFileShorthand": {
+      "type": "object",
+      "required": ["source", "destination"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string" },
+        "destination": { "type": "string" }
+      }
+    },
+    "installAction": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "mcpServer", "plugin", "brewInstall", "shellCommand",
+            "gitignoreEntries", "settingsMerge", "settingsFile", "copyPackFile"
+          ]
+        },
+        "name": { "type": "string" },
+        "command": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "transport": {
+          "type": "string",
+          "enum": ["stdio", "http"]
+        },
+        "url": { "type": "string" },
+        "scope": {
+          "type": "string",
+          "enum": ["local", "user", "project"]
+        },
+        "package": { "type": "string" },
+        "entries": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "source": { "type": "string" },
+        "destination": { "type": "string" },
+        "fileType": {
+          "type": "string",
+          "enum": ["skill", "hook", "command", "agent", "generic"]
+        }
+      }
+    },
+    "template": {
+      "type": "object",
+      "required": ["sectionIdentifier", "contentFile"],
+      "additionalProperties": false,
+      "properties": {
+        "sectionIdentifier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contentFile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "placeholders": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "required": ["key", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": ["fileDetect", "input", "select", "script"]
+        },
+        "label": { "type": "string" },
+        "default": { "type": "string" },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["value", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "value": { "type": "string" },
+              "label": { "type": "string" }
+            }
+          }
+        },
+        "detectPattern": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "scriptCommand": { "type": "string" }
+      }
+    },
+    "doctorCheck": {
+      "type": "object",
+      "required": ["type", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "commandExists", "fileExists", "directoryExists",
+            "fileContains", "fileNotContains", "shellScript",
+            "hookEventExists", "settingsKeyEquals"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "section": { "type": "string" },
+        "scope": {
+          "type": "string",
+          "enum": ["global", "project"]
+        },
+        "isOptional": { "type": "boolean" },
+        "fixCommand": { "type": "string" },
+        "fixScript": { "type": "string" },
+        "command": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "path": { "type": "string" },
+        "pattern": { "type": "string" },
+        "event": { "type": "string" },
+        "keyPath": { "type": "string" },
+        "expectedValue": { "type": "string" }
+      }
+    },
+    "configureProject": {
+      "type": "object",
+      "required": ["script"],
+      "additionalProperties": false,
+      "properties": {
+        "script": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

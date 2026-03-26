@@ -1,0 +1,247 @@
+document.addEventListener('DOMContentLoaded', () => {
+  // -- Fade-in observer (same as main site) --
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) entry.target.classList.add('visible');
+    });
+  }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  // -- State --
+  let currentSort = 'stars';
+  let debounceTimer = null;
+
+  // -- Elements --
+  const searchInput = document.getElementById('search-input');
+  const packsGrid = document.getElementById('packs-grid');
+  const packsEmpty = document.getElementById('packs-empty');
+  const packsLoading = document.getElementById('packs-loading');
+  const packCount = document.getElementById('pack-count');
+  const sortBtns = document.querySelectorAll('.sort-btn');
+  const submitForm = document.getElementById('submit-form');
+  const submitResult = document.getElementById('submit-result');
+  const submitBtn = document.getElementById('submit-btn');
+
+  // -- Init: load from URL query or default --
+  const params = new URLSearchParams(window.location.search);
+  const initialQuery = params.get('q') || '';
+  if (initialQuery) searchInput.value = initialQuery;
+  loadPacks(initialQuery, currentSort);
+
+  // -- Search --
+  searchInput.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      const query = searchInput.value.trim();
+      updateUrlQuery(query);
+      loadPacks(query, currentSort);
+    }, 300);
+  });
+
+  // -- Sort --
+  sortBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      sortBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentSort = btn.dataset.sort;
+      loadPacks(searchInput.value.trim(), currentSort);
+    });
+  });
+
+  // -- Submit form --
+  submitForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const repoUrl = document.getElementById('repo-url').value.trim();
+    const honeypot = document.getElementById('website').value;
+
+    if (!repoUrl) return;
+
+    // Get Turnstile token
+    const turnstileToken = typeof turnstile !== 'undefined'
+      ? turnstile.getResponse()
+      : '';
+
+    if (!turnstileToken && typeof turnstile !== 'undefined') {
+      showResult('error', 'Please complete the verification challenge.');
+      return;
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Submitting...';
+
+    try {
+      const response = await fetch('/api/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl, turnstileToken, honeypot }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        showResult('success', `Pack <strong>${escapeHtml(data.pack.displayName)}</strong> added to the registry!`);
+        document.getElementById('repo-url').value = '';
+        // Optimistically add to the grid
+        if (data.pack) {
+          const card = renderPackCard(data.pack);
+          packsGrid.insertAdjacentHTML('afterbegin', card);
+        }
+        // Reload packs to update count
+        loadPacks(searchInput.value.trim(), currentSort);
+      } else {
+        let msg = escapeHtml(data.error || 'Submission failed.');
+        if (data.details && data.details.length > 0) {
+          msg += '<ul>' + data.details.map(d => `<li>${escapeHtml(d)}</li>`).join('') + '</ul>';
+        }
+        showResult('error', msg);
+      }
+    } catch (err) {
+      showResult('error', 'Network error. Please try again.');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Submit Pack';
+      if (typeof turnstile !== 'undefined') {
+        turnstile.reset();
+      }
+    }
+  });
+
+  // -- Functions --
+
+  async function loadPacks(query, sort) {
+    packsGrid.style.display = 'none';
+    packsEmpty.style.display = 'none';
+    packsLoading.style.display = 'grid';
+
+    try {
+      const params = new URLSearchParams({ sort, limit: '50' });
+      if (query) params.set('q', query);
+
+      const response = await fetch(`/api/packs?${params}`);
+      const data = await response.json();
+
+      packsLoading.style.display = 'none';
+
+      if (data.packs.length === 0) {
+        packsGrid.style.display = 'none';
+        packsEmpty.style.display = 'block';
+        packCount.textContent = '0 packs';
+        return;
+      }
+
+      packsGrid.innerHTML = data.packs.map(renderPackCard).join('');
+      packsGrid.style.display = 'grid';
+      packCount.textContent = `${data.total} pack${data.total !== 1 ? 's' : ''}`;
+    } catch (err) {
+      packsLoading.style.display = 'none';
+      packsGrid.innerHTML = '<p style="color:var(--text-muted)">Failed to load packs.</p>';
+      packsGrid.style.display = 'grid';
+    }
+  }
+
+  function renderPackCard(pack) {
+    const badges = renderBadges(pack.components);
+    const dotColor = getDotColor(pack.components);
+    const updated = timeAgo(pack.pushedAt);
+    const banner = renderBanner(pack.status);
+
+    return `
+      <a href="${escapeHtml(pack.repoUrl)}" target="_blank" rel="noopener" class="pack-card">
+        ${banner}
+        <div class="pack-card-header">
+          <span class="pack-dot pack-dot--${dotColor}"></span>
+          <span class="pack-card-name">${escapeHtml(pack.displayName)}</span>
+          <span class="star-count">
+            <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            ${pack.stargazerCount}
+          </span>
+        </div>
+        <p class="pack-card-desc">${escapeHtml(pack.description)}</p>
+        ${pack.author ? `<div class="pack-card-author">by ${escapeHtml(pack.author)}</div>` : ''}
+        <div class="pack-card-badges">${badges}</div>
+        <div class="pack-card-meta">
+          <span class="pack-card-install">mcs pack add ${escapeHtml(pack.identifier)}</span>
+          <span class="pack-card-updated">Updated ${updated}</span>
+        </div>
+      </a>
+    `;
+  }
+
+  function renderBadges(components) {
+    const badges = [];
+    const map = {
+      mcpServers: { label: 'MCP Server', cls: 'mcp' },
+      hooks: { label: 'Hook', cls: 'hooks' },
+      skills: { label: 'Skill', cls: 'skills' },
+      commands: { label: 'Command', cls: 'commands' },
+      agents: { label: 'Agent', cls: 'agents' },
+      brewPackages: { label: 'Brew', cls: 'brew' },
+      plugins: { label: 'Plugin', cls: 'plugins' },
+      templates: { label: 'Template', cls: 'templates' },
+    };
+
+    for (const [key, { label, cls }] of Object.entries(map)) {
+      const count = components[key];
+      if (count > 0) {
+        const plural = count > 1 ? 's' : '';
+        badges.push(`<span class="component-badge component-badge--${cls}">${count} ${label}${plural}</span>`);
+      }
+    }
+    return badges.join('');
+  }
+
+  function getDotColor(components) {
+    if (components.mcpServers > 0) return 'purple';
+    if (components.hooks > 0 || components.skills > 0) return 'teal';
+    if (components.commands > 0 || components.agents > 0) return 'blue';
+    if (components.brewPackages > 0) return 'amber';
+    return 'purple';
+  }
+
+  function renderBanner(status) {
+    if (status === 'unavailable') {
+      return '<div class="pack-card-banner pack-card-banner--unavailable">This pack\'s repository is currently unavailable</div>';
+    }
+    if (status === 'invalid') {
+      return '<div class="pack-card-banner pack-card-banner--invalid">This pack\'s manifest has validation errors</div>';
+    }
+    return '';
+  }
+
+  function timeAgo(isoDate) {
+    const seconds = Math.floor((Date.now() - new Date(isoDate).getTime()) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.floor(days / 30);
+    if (months < 12) return `${months}mo ago`;
+    const years = Math.floor(months / 12);
+    return `${years}y ago`;
+  }
+
+  function updateUrlQuery(query) {
+    const url = new URL(window.location);
+    if (query) {
+      url.searchParams.set('q', query);
+    } else {
+      url.searchParams.delete('q');
+    }
+    history.replaceState(null, '', url);
+  }
+
+  function showResult(type, html) {
+    submitResult.style.display = 'block';
+    submitResult.className = `submit-result submit-result--${type}`;
+    submitResult.innerHTML = html;
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+});
