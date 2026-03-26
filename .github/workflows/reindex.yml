@@ -1,0 +1,20 @@
+name: Scheduled Reindex
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # Every 6 hours
+  workflow_dispatch: # Manual trigger from GitHub UI
+
+jobs:
+  reindex:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger reindex
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            "${{ secrets.REGISTRY_URL }}/api/reindex")
+          echo "Response: $response"
+          if [ "$response" != "200" ]; then
+            echo "Reindex failed with status $response"
+            exit 1
+          fi
