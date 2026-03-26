@@ -2,13 +2,6 @@ import type { Env } from "./src/types.js";
 import { handleListPacks, handleGetPack, jsonResponse } from "./src/api/packs.js";
 import { handleSubmit } from "./src/api/submit.js";
 import { handleReindex } from "./src/api/reindex.js";
-import {
-  fetchRepoMetadata,
-  fetchTechpackYaml,
-  parseGitHubUrl,
-} from "./src/lib/github.js";
-import { validateTechpackYaml } from "./src/lib/validator.js";
-import type { PackEntry } from "./src/types.js";
 
 export default {
   async fetch(
@@ -70,67 +63,9 @@ async function handleApiRoute(
     if (!authHeader || authHeader !== `Bearer ${env.REINDEX_SECRET}`) {
       return jsonResponse({ error: "Unauthorized" }, 401);
     }
-    ctx.waitUntil(
-      seedFromTechpacksJson(env).then(() => handleReindex(env))
-    );
+    ctx.waitUntil(handleReindex(env));
     return jsonResponse({ message: "Reindex triggered" });
   }
 
   return jsonResponse({ error: "Not found" }, 404);
-}
-
-async function seedFromTechpacksJson(env: Env): Promise<void> {
-  const response = await fetch(
-    "https://raw.githubusercontent.com/mcs-cli/registry/main/techpacks.json",
-    { headers: { "User-Agent": "mcs-registry" } }
-  );
-
-  if (!response.ok) return;
-
-  const urls = (await response.json()) as string[];
-  const identifiers: string[] = [];
-
-  for (const repoUrl of urls) {
-    const metadata = await fetchRepoMetadata(repoUrl, env.GITHUB_TOKEN);
-    if (!metadata) continue;
-
-    const parsed = parseGitHubUrl(repoUrl);
-    if (!parsed) continue;
-
-    const yamlContent = await fetchTechpackYaml(
-      parsed.owner,
-      parsed.repo,
-      metadata.defaultBranch,
-      env.GITHUB_TOKEN
-    );
-    if (!yamlContent) continue;
-
-    const validation = validateTechpackYaml(yamlContent);
-    if (!validation.valid || !validation.packData) continue;
-
-    const pack: PackEntry = {
-      identifier: validation.packData.identifier,
-      displayName: validation.packData.displayName,
-      description: validation.packData.description,
-      author: validation.packData.author,
-      repoUrl: `https://github.com/${parsed.owner}/${parsed.repo}`,
-      defaultBranch: metadata.defaultBranch,
-      latestTag: metadata.latestTag,
-      stargazerCount: metadata.stargazerCount,
-      pushedAt: metadata.pushedAt,
-      components: validation.packData.components,
-      keywords: validation.packData.keywords,
-      status: "active",
-      indexedAt: new Date().toISOString(),
-    };
-
-    await env.PACKS.put(`pack:${pack.identifier}`, JSON.stringify(pack));
-    identifiers.push(pack.identifier);
-  }
-
-  // Merge with existing index
-  const existingRaw = await env.PACKS.get("index:all");
-  const existing: string[] = existingRaw ? JSON.parse(existingRaw) : [];
-  const merged = [...new Set([...existing, ...identifiers])].sort();
-  await env.PACKS.put("index:all", JSON.stringify(merged));
 }
