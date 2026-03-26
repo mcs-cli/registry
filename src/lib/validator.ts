@@ -1,7 +1,5 @@
-import Ajv from "ajv";
 import * as yaml from "js-yaml";
 import type { ExtractedPackData, ComponentCounts, ValidationResult } from "../types.js";
-import techpackSchema from "../../schema/techpack-schema.json" with { type: "json" };
 
 const VALID_HOOK_EVENTS = new Set([
   "SessionStart",
@@ -30,6 +28,11 @@ const VALID_HOOK_EVENTS = new Set([
 
 const IDENTIFIER_REGEX = /^[a-z0-9][a-z0-9-]*$/;
 
+const VALID_COMPONENT_TYPES = new Set([
+  "mcpServer", "plugin", "skill", "hookFile", "command",
+  "agent", "brewPackage", "configuration",
+]);
+
 const COMPONENT_TYPE_MAP: Record<string, keyof ComponentCounts> = {
   mcpServer: "mcpServers",
   plugin: "plugins",
@@ -54,6 +57,10 @@ const SHORTHAND_TYPE_MAP: Record<string, string> = {
   gitignore: "configuration",
 };
 
+const VALID_SCOPES = new Set(["user", "project"]);
+const VALID_PROMPT_TYPES = new Set(["slash", "skill"]);
+const VALID_DOCTOR_CHECK_TYPES = new Set(["shell", "file"]);
+
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
   "has", "he", "in", "is", "it", "its", "of", "on", "or", "that",
@@ -77,19 +84,10 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
   }
 
   const manifest = parsed as Record<string, unknown>;
-
-  // Step 2: JSON Schema structural validation
-  const ajv = new Ajv({ allErrors: true, strict: false });
-  const validate = ajv.compile(techpackSchema);
-  const schemaValid = validate(manifest);
-
   const errors: string[] = [];
-  if (!schemaValid && validate.errors) {
-    for (const err of validate.errors) {
-      const path = err.instancePath || "/";
-      errors.push(`${path}: ${err.message ?? "unknown schema error"}`);
-    }
-  }
+
+  // Step 2: Structural validation (replaces Ajv — Workers block new Function())
+  validateStructure(manifest, errors);
 
   // Step 3: Semantic validation (mirrors Swift ExternalPackManifest.validate())
   if (manifest.schemaVersion !== 1) {
@@ -110,18 +108,15 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
     const id = comp.id as string | undefined;
     if (!id) continue;
 
-    // IDs must not contain dots (the CLI auto-prefixes with identifier.)
     if (id.includes(".")) {
       errors.push(`Component id '${id}' must not contain dots`);
     }
 
-    // Unique check
     if (componentIds.has(id)) {
       errors.push(`Duplicate component id: '${id}'`);
     }
     componentIds.add(id);
 
-    // hookEvent validation
     const hookEvent = comp.hookEvent as string | undefined;
     if (hookEvent && !VALID_HOOK_EVENTS.has(hookEvent)) {
       errors.push(
@@ -129,7 +124,6 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
       );
     }
 
-    // hookTimeout/hookAsync/hookStatusMessage require hookEvent
     if (!hookEvent) {
       if (comp.hookTimeout !== undefined) {
         errors.push(`Component '${id}': hookTimeout requires hookEvent`);
@@ -142,7 +136,6 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
       }
     }
 
-    // hookTimeout must be positive
     if (
       comp.hookTimeout !== undefined &&
       (typeof comp.hookTimeout !== "number" || comp.hookTimeout <= 0)
@@ -171,6 +164,119 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
   // Step 4: Extract pack data for indexing
   const packData = extractPackData(manifest, components);
   return { valid: true, errors: [], packData };
+}
+
+function validateStructure(manifest: Record<string, unknown>, errors: string[]): void {
+  // Required string fields
+  for (const field of ["identifier", "displayName", "description"] as const) {
+    if (typeof manifest[field] !== "string" || (manifest[field] as string).length === 0) {
+      errors.push(`'${field}' is required and must be a non-empty string`);
+    }
+  }
+
+  // schemaVersion must be a number
+  if (typeof manifest.schemaVersion !== "number") {
+    errors.push("'schemaVersion' is required and must be a number");
+  }
+
+  // Optional string fields
+  for (const field of ["author", "minMCSVersion"] as const) {
+    if (manifest[field] !== undefined && typeof manifest[field] !== "string") {
+      errors.push(`'${field}' must be a string`);
+    }
+  }
+
+  // components must be an array of objects
+  if (manifest.components !== undefined) {
+    if (!Array.isArray(manifest.components)) {
+      errors.push("'components' must be an array");
+    } else {
+      for (let i = 0; i < manifest.components.length; i++) {
+        const comp = manifest.components[i];
+        if (!comp || typeof comp !== "object") {
+          errors.push(`components[${i}] must be an object`);
+          continue;
+        }
+        validateComponent(comp as Record<string, unknown>, i, errors);
+      }
+    }
+  }
+
+  // templates must be an array
+  if (manifest.templates !== undefined && !Array.isArray(manifest.templates)) {
+    errors.push("'templates' must be an array");
+  }
+
+  // prompts must be an array
+  if (manifest.prompts !== undefined) {
+    if (!Array.isArray(manifest.prompts)) {
+      errors.push("'prompts' must be an array");
+    } else {
+      for (let i = 0; i < manifest.prompts.length; i++) {
+        const prompt = manifest.prompts[i] as Record<string, unknown>;
+        if (!prompt || typeof prompt !== "object") {
+          errors.push(`prompts[${i}] must be an object`);
+          continue;
+        }
+        if (typeof prompt.key !== "string") {
+          errors.push(`prompts[${i}].key is required and must be a string`);
+        }
+        if (prompt.type !== undefined && !VALID_PROMPT_TYPES.has(prompt.type as string)) {
+          errors.push(`prompts[${i}].type must be one of: ${[...VALID_PROMPT_TYPES].join(", ")}`);
+        }
+      }
+    }
+  }
+
+  // supplementaryDoctorChecks must be an array
+  if (manifest.supplementaryDoctorChecks !== undefined) {
+    if (!Array.isArray(manifest.supplementaryDoctorChecks)) {
+      errors.push("'supplementaryDoctorChecks' must be an array");
+    } else {
+      for (let i = 0; i < manifest.supplementaryDoctorChecks.length; i++) {
+        const check = manifest.supplementaryDoctorChecks[i] as Record<string, unknown>;
+        if (!check || typeof check !== "object") continue;
+        if (check.type !== undefined && !VALID_DOCTOR_CHECK_TYPES.has(check.type as string)) {
+          errors.push(`supplementaryDoctorChecks[${i}].type must be one of: ${[...VALID_DOCTOR_CHECK_TYPES].join(", ")}`);
+        }
+      }
+    }
+  }
+}
+
+function validateComponent(comp: Record<string, unknown>, index: number, errors: string[]): void {
+  // id is required, displayName is optional
+  if (typeof comp.id !== "string") {
+    errors.push(`components[${index}].id is required and must be a string`);
+  }
+  if (comp.displayName !== undefined && typeof comp.displayName !== "string") {
+    errors.push(`components[${index}].displayName must be a string`);
+  }
+
+  // Resolve type (shorthand or explicit)
+  const resolvedType = resolveComponentType(comp);
+
+  // If explicit type field, validate it
+  if (comp.type !== undefined && typeof comp.type === "string" && !VALID_COMPONENT_TYPES.has(comp.type)) {
+    errors.push(`components[${index}].type '${comp.type}' is not a valid component type`);
+  }
+
+  // Scope validation
+  if (comp.scope !== undefined && !VALID_SCOPES.has(comp.scope as string)) {
+    errors.push(`components[${index}].scope must be one of: ${[...VALID_SCOPES].join(", ")}`);
+  }
+
+  // hookEvent must be a string if present
+  if (comp.hookEvent !== undefined && typeof comp.hookEvent !== "string") {
+    errors.push(`components[${index}].hookEvent must be a string`);
+  }
+
+  // hookAsync must be boolean
+  if (comp.hookAsync !== undefined && typeof comp.hookAsync !== "boolean") {
+    errors.push(`components[${index}].hookAsync must be a boolean`);
+  }
+
+  return void resolvedType; // use resolvedType to avoid unused warning
 }
 
 function extractPackData(
@@ -223,9 +329,6 @@ function resolveComponentType(comp: Record<string, unknown>): string | null {
 
   // Check explicit type field
   if (typeof comp.type === "string") return comp.type;
-
-  // Check shell shorthand (requires explicit type)
-  if (comp.shell !== undefined && typeof comp.type === "string") return comp.type;
 
   return null;
 }
