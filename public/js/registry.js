@@ -23,10 +23,29 @@ document.addEventListener('DOMContentLoaded', () => {
   }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
   document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
 
+  // -- Count-up animation --
+  function animateCountUp(el, target, duration = 1200) {
+    const start = parseInt(el.textContent, 10) || 0;
+    if (start === target) return;
+    const startTime = performance.now();
+    function easeOutExpo(t) {
+      return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
+    }
+    function tick(now) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = easeOutExpo(progress);
+      el.textContent = Math.round(start + (target - start) * eased);
+      if (progress < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
   // -- State --
   let currentSort = 'stars';
   let debounceTimer = null;
   let isFirstLoad = true;
+  let statsAnimated = false;
 
   // -- Elements --
   const searchInput = document.getElementById('search-input');
@@ -159,6 +178,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       packCount.textContent = `${data.total} pack${data.total !== 1 ? 's' : ''}`;
+
+      // Animate total registered count on first load
+      if (!statsAnimated && data.totalRegistered) {
+        animateCountUp(document.getElementById('stat-packs'), data.totalRegistered);
+        statsAnimated = true;
+      }
+
       isFirstLoad = false;
     } catch (err) {
       packsLoading.style.display = 'none';

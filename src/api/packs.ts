@@ -51,7 +51,7 @@ export async function handleListPacks(
   const total = scored.length;
   const paginated = scored.slice(offset, offset + limit).map((entry) => entry.pack);
 
-  return jsonResponse({ packs: paginated, total });
+  return jsonResponse({ packs: paginated, total, totalRegistered: slugs.length });
 }
 
 export async function handleGetPack(
