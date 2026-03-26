@@ -162,7 +162,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         packsGrid.style.display = 'none';
         packsEmpty.style.display = 'block';
-        packCount.textContent = '0 packs';
+        packCount.textContent = query ? '0 results' : '';
         isFirstLoad = false;
         return;
       }
@@ -177,7 +177,7 @@ document.addEventListener('DOMContentLoaded', () => {
         await transitionCards(newHtml);
       }
 
-      packCount.textContent = `${data.total} pack${data.total !== 1 ? 's' : ''}`;
+      packCount.textContent = query ? `${data.total} result${data.total !== 1 ? 's' : ''}` : '';
 
       // Animate total registered count on first load
       if (!statsAnimated && data.totalRegistered) {
