@@ -66,18 +66,24 @@ async function handleApiRoute(
 
   // POST /api/reindex (manual trigger — for seeding and scheduled reindex via GitHub Actions)
   if (path === "/api/reindex" && request.method === "POST") {
-    ctx.waitUntil(
-      seedFromPackagesJson(env).then(() => handleReindex(env))
-    );
-    return jsonResponse({ message: "Reindex triggered" });
+    try {
+      await seedFromTechpacksJson(env);
+      await handleReindex(env);
+      return jsonResponse({ message: "Reindex complete" });
+    } catch (e) {
+      return jsonResponse(
+        { error: "Reindex failed", detail: e instanceof Error ? e.message : String(e) },
+        500
+      );
+    }
   }
 
   return jsonResponse({ error: "Not found" }, 404);
 }
 
-async function seedFromPackagesJson(env: Env): Promise<void> {
+async function seedFromTechpacksJson(env: Env): Promise<void> {
   const response = await fetch(
-    "https://raw.githubusercontent.com/mcs-cli/registry/main/packages.json",
+    "https://raw.githubusercontent.com/mcs-cli/registry/main/techpacks.json",
     { headers: { "User-Agent": "mcs-registry" } }
   );
 
