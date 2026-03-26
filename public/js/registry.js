@@ -266,7 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const installCmd = `mcs pack add ${ownerRepo}`;
 
     return `
-      <div class="pack-card" data-id="${escapeHtml(pack.identifier)}" data-repo="${escapeHtml(pack.repoUrl)}">
+      <div class="pack-card" data-id="${escapeHtml(pack.slug)}" data-repo="${escapeHtml(pack.repoUrl)}">
         ${banner}
         <a href="${escapeHtml(pack.repoUrl)}" target="_blank" rel="noopener" class="pack-card-link">
           <div class="pack-card-header">

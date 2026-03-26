@@ -52,10 +52,13 @@ async function handleApiRoute(
     return handleListPacks(request, env, ctx);
   }
 
-  // GET /api/packs/:identifier
-  const packMatch = path.match(/^\/api\/packs\/([a-z0-9][a-z0-9-]*)$/);
+  // GET /api/packs/:provider/:owner/:repo
+  const packMatch = path.match(
+    /^\/api\/packs\/(github)\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)$/
+  );
   if (packMatch && request.method === "GET") {
-    return handleGetPack(packMatch[1], env, ctx);
+    const slug = `${packMatch[1]}/${packMatch[2]}/${packMatch[3]}`;
+    return handleGetPack(slug, env, ctx);
   }
 
   // POST /api/submit
@@ -92,7 +95,7 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
   if (!response.ok) return;
 
   const urls = (await response.json()) as string[];
-  const identifiers: string[] = [];
+  const slugs: string[] = [];
 
   for (const repoUrl of urls) {
     const metadata = await fetchRepoMetadata(repoUrl, env.GITHUB_TOKEN);
@@ -112,7 +115,9 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
     const validation = validateTechpackYaml(yamlContent);
     if (!validation.valid || !validation.packData) continue;
 
+    const slug = `github/${parsed.owner}/${parsed.repo}`;
     const pack = {
+      slug,
       identifier: validation.packData.identifier,
       displayName: validation.packData.displayName,
       description: validation.packData.description,
@@ -128,13 +133,13 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
       indexedAt: new Date().toISOString(),
     };
 
-    await env.PACKS.put(`pack:${pack.identifier}`, JSON.stringify(pack));
-    identifiers.push(pack.identifier);
+    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
+    slugs.push(slug);
   }
 
   // Merge with existing index
   const existingRaw = await env.PACKS.get("index:all");
   const existing: string[] = existingRaw ? JSON.parse(existingRaw) : [];
-  const merged = [...new Set([...existing, ...identifiers])].sort();
+  const merged = [...new Set([...existing, ...slugs])].sort();
   await env.PACKS.put("index:all", JSON.stringify(merged));
 }

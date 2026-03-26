@@ -1,4 +1,5 @@
 export interface PackEntry {
+  slug: string;
   identifier: string;
   displayName: string;
   description: string;

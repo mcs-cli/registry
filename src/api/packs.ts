@@ -18,11 +18,11 @@ export async function handleListPacks(
     return jsonResponse({ packs: [], total: 0 });
   }
 
-  const identifiers = JSON.parse(indexRaw) as string[];
+  const slugs = JSON.parse(indexRaw) as string[];
   const packs: PackEntry[] = [];
 
-  for (const id of identifiers) {
-    const raw = await env.PACKS.get(`pack:${id}`);
+  for (const slug of slugs) {
+    const raw = await env.PACKS.get(`pack:${slug}`);
     if (!raw) continue;
     const pack = JSON.parse(raw) as PackEntry;
     if (!includeAll && pack.status !== "active") continue;
@@ -55,11 +55,11 @@ export async function handleListPacks(
 }
 
 export async function handleGetPack(
-  identifier: string,
+  slug: string,
   env: Env,
   ctx: ExecutionContext
 ): Promise<Response> {
-  const raw = await env.PACKS.get(`pack:${identifier}`);
+  const raw = await env.PACKS.get(`pack:${slug}`);
   if (!raw) {
     return jsonResponse({ error: "Pack not found" }, 404);
   }
@@ -70,7 +70,7 @@ export async function handleGetPack(
   const indexedAt = new Date(pack.indexedAt).getTime();
   const oneHourAgo = Date.now() - 60 * 60 * 1000;
   if (indexedAt < oneHourAgo) {
-    ctx.waitUntil(reindexSinglePack(identifier, env));
+    ctx.waitUntil(reindexSinglePack(slug, env));
   }
 
   return jsonResponse(pack);
@@ -85,6 +85,12 @@ function computeSearchScore(pack: PackEntry, query: string): number {
     score += 100;
   } else if (pack.identifier.toLowerCase().includes(q)) {
     score += 50;
+  }
+
+  // Owner/repo match (slug is "github/owner/repo", match against owner/repo part)
+  const ownerRepo = pack.slug.replace(/^github\//, "");
+  if (ownerRepo.toLowerCase().includes(q)) {
+    score += 35;
   }
 
   // Display name

@@ -63,11 +63,22 @@ export async function handleSubmit(
     );
   }
 
-  // Duplicate check
-  const existing = await findPackByRepoUrl(repoUrl, env);
-  if (existing) {
+  // Derive slug from URL
+  const parsed = parseGitHubUrl(repoUrl);
+  if (!parsed) {
     return jsonResponse(
-      { error: `This repository is already registered as '${existing.identifier}'.`, pack: existing },
+      { error: "Invalid URL. Must be a GitHub repository (https://github.com/owner/repo)." },
+      400
+    );
+  }
+  const slug = `github/${parsed.owner}/${parsed.repo}`;
+
+  // Duplicate check — O(1) KV lookup
+  const existingRaw = await env.PACKS.get(`pack:${slug}`);
+  if (existingRaw) {
+    const existing = JSON.parse(existingRaw) as PackEntry;
+    return jsonResponse(
+      { error: `This repository is already registered as '${existing.displayName}'.`, pack: existing },
       409
     );
   }
@@ -107,22 +118,9 @@ export async function handleSubmit(
     );
   }
 
-  // Check identifier collision
-  const existingById = await env.PACKS.get(`pack:${validation.packData.identifier}`);
-  if (existingById) {
-    const existingPack = JSON.parse(existingById) as PackEntry;
-    if (existingPack.repoUrl !== repoUrl) {
-      return jsonResponse(
-        {
-          error: `A pack with identifier '${validation.packData.identifier}' is already registered from a different repository.`,
-        },
-        409
-      );
-    }
-  }
-
   // Build pack entry
   const pack: PackEntry = {
+    slug,
     identifier: validation.packData.identifier,
     displayName: validation.packData.displayName,
     description: validation.packData.description,
@@ -139,15 +137,15 @@ export async function handleSubmit(
   };
 
   // Store in KV
-  await env.PACKS.put(`pack:${pack.identifier}`, JSON.stringify(pack));
+  await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
 
   // Update index list
   const indexRaw = await env.PACKS.get("index:all");
-  const identifiers: string[] = indexRaw ? JSON.parse(indexRaw) : [];
-  if (!identifiers.includes(pack.identifier)) {
-    identifiers.push(pack.identifier);
-    identifiers.sort();
-    await env.PACKS.put("index:all", JSON.stringify(identifiers));
+  const slugs: string[] = indexRaw ? JSON.parse(indexRaw) : [];
+  if (!slugs.includes(slug)) {
+    slugs.push(slug);
+    slugs.sort();
+    await env.PACKS.put("index:all", JSON.stringify(slugs));
   }
 
   // Increment rate limit counter
@@ -169,23 +167,6 @@ function normalizeGitHubUrl(input: string): string | null {
 
   // Normalize to canonical form
   return `https://github.com/${parsed.owner}/${parsed.repo}`;
-}
-
-async function findPackByRepoUrl(
-  repoUrl: string,
-  env: Env
-): Promise<PackEntry | null> {
-  const indexRaw = await env.PACKS.get("index:all");
-  if (!indexRaw) return null;
-
-  const identifiers = JSON.parse(indexRaw) as string[];
-  for (const id of identifiers) {
-    const raw = await env.PACKS.get(`pack:${id}`);
-    if (!raw) continue;
-    const pack = JSON.parse(raw) as PackEntry;
-    if (pack.repoUrl === repoUrl) return pack;
-  }
-  return null;
 }
 
 async function checkRateLimit(ip: string, env: Env): Promise<boolean> {

@@ -32,27 +32,27 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
     return result;
   }
 
-  const identifiers = JSON.parse(indexRaw) as string[];
-  if (identifiers.length === 0) {
+  const slugs = JSON.parse(indexRaw) as string[];
+  if (slugs.length === 0) {
     console.log("[reindex] Index is empty — nothing to reindex");
     return result;
   }
 
-  result.total = identifiers.length;
-  console.log(`[reindex] Starting reindex of ${identifiers.length} packs`);
+  result.total = slugs.length;
+  console.log(`[reindex] Starting reindex of ${slugs.length} packs`);
 
   // Collect all repo URLs
   const packMap = new Map<string, PackEntry>();
   const repoUrls: string[] = [];
 
-  for (const id of identifiers) {
-    const raw = await env.PACKS.get(`pack:${id}`);
+  for (const slug of slugs) {
+    const raw = await env.PACKS.get(`pack:${slug}`);
     if (!raw) {
-      console.log(`[reindex] Pack "${id}" not found in KV — skipping`);
+      console.log(`[reindex] Pack "${slug}" not found in KV — skipping`);
       continue;
     }
     const pack = JSON.parse(raw) as PackEntry;
-    packMap.set(id, pack);
+    packMap.set(slug, pack);
     repoUrls.push(pack.repoUrl);
   }
 
@@ -65,7 +65,7 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
     `[reindex] Got metadata for ${metadataMap.size}/${repoUrls.length} repos`
   );
 
-  for (const [id, pack] of packMap) {
+  for (const [slug, pack] of packMap) {
     const metadata = metadataMap.get(pack.repoUrl);
 
     if (!metadata) {
@@ -73,10 +73,10 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
       if (pack.status !== "unavailable") {
         pack.status = "unavailable";
         pack.indexedAt = new Date().toISOString();
-        await env.PACKS.put(`pack:${id}`, JSON.stringify(pack));
-        console.log(`[reindex] "${id}" → unavailable (repo not found)`);
+        await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
+        console.log(`[reindex] "${slug}" → unavailable (repo not found)`);
       } else {
-        console.log(`[reindex] "${id}" → still unavailable`);
+        console.log(`[reindex] "${slug}" → still unavailable`);
       }
       result.unavailable++;
       continue;
@@ -95,8 +95,8 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
       // Re-fetch and re-validate techpack.yaml
       const parsed = parseGitHubUrl(pack.repoUrl);
       if (!parsed) {
-        console.log(`[reindex] "${id}" → error (invalid repo URL)`);
-        result.errors.push(`${id}: invalid repo URL`);
+        console.log(`[reindex] "${slug}" → error (invalid repo URL)`);
+        result.errors.push(`${slug}: invalid repo URL`);
         continue;
       }
 
@@ -110,8 +110,8 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
       if (!yamlContent) {
         pack.status = "invalid";
         pack.indexedAt = new Date().toISOString();
-        await env.PACKS.put(`pack:${id}`, JSON.stringify(pack));
-        console.log(`[reindex] "${id}" → invalid (techpack.yaml not found)`);
+        await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
+        console.log(`[reindex] "${slug}" → invalid (techpack.yaml not found)`);
         result.invalid++;
         continue;
       }
@@ -120,8 +120,8 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
       if (!validation.valid || !validation.packData) {
         pack.status = "invalid";
         pack.indexedAt = new Date().toISOString();
-        await env.PACKS.put(`pack:${id}`, JSON.stringify(pack));
-        console.log(`[reindex] "${id}" → invalid (validation failed)`);
+        await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
+        console.log(`[reindex] "${slug}" → invalid (validation failed)`);
         result.invalid++;
         continue;
       }
@@ -133,15 +133,15 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
       pack.components = validation.packData.components;
       pack.keywords = validation.packData.keywords;
       pack.status = "active";
-      console.log(`[reindex] "${id}" → updated`);
+      console.log(`[reindex] "${slug}" → updated`);
       result.updated++;
     } else {
-      console.log(`[reindex] "${id}" → unchanged (no new push)`);
+      console.log(`[reindex] "${slug}" → unchanged (no new push)`);
       result.unchanged++;
     }
 
     pack.indexedAt = new Date().toISOString();
-    await env.PACKS.put(`pack:${id}`, JSON.stringify(pack));
+    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
   }
 
   console.log(
@@ -151,10 +151,10 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
 }
 
 export async function reindexSinglePack(
-  identifier: string,
+  slug: string,
   env: Env
 ): Promise<void> {
-  const raw = await env.PACKS.get(`pack:${identifier}`);
+  const raw = await env.PACKS.get(`pack:${slug}`);
   if (!raw) return;
 
   const pack = JSON.parse(raw) as PackEntry;
@@ -163,7 +163,7 @@ export async function reindexSinglePack(
   if (!metadata) {
     pack.status = "unavailable";
     pack.indexedAt = new Date().toISOString();
-    await env.PACKS.put(`pack:${identifier}`, JSON.stringify(pack));
+    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
     return;
   }
 
@@ -185,7 +185,7 @@ export async function reindexSinglePack(
   if (!yamlContent) {
     pack.status = "invalid";
     pack.indexedAt = new Date().toISOString();
-    await env.PACKS.put(`pack:${identifier}`, JSON.stringify(pack));
+    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
     return;
   }
 
@@ -193,7 +193,7 @@ export async function reindexSinglePack(
   if (!validation.valid || !validation.packData) {
     pack.status = "invalid";
     pack.indexedAt = new Date().toISOString();
-    await env.PACKS.put(`pack:${identifier}`, JSON.stringify(pack));
+    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
     return;
   }
 
@@ -205,5 +205,5 @@ export async function reindexSinglePack(
   pack.status = "active";
   pack.indexedAt = new Date().toISOString();
 
-  await env.PACKS.put(`pack:${identifier}`, JSON.stringify(pack));
+  await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
 }
