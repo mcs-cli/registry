@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // -- State --
   let currentSort = 'stars';
   let debounceTimer = null;
+  let isFirstLoad = true;
 
   // -- Elements --
   const searchInput = document.getElementById('search-input');
@@ -97,12 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (response.ok && data.success) {
         showResult('success', `Pack <strong>${escapeHtml(data.pack.displayName)}</strong> added to the registry!`);
         document.getElementById('repo-url').value = '';
-        // Optimistically add to the grid
-        if (data.pack) {
-          const card = renderPackCard(data.pack);
-          packsGrid.insertAdjacentHTML('afterbegin', card);
-        }
-        // Reload packs to update count
+        // Reload packs to update count and show the new pack
         loadPacks(searchInput.value.trim(), currentSort);
       } else {
         let msg = escapeHtml(data.error || 'Submission failed.');
@@ -125,9 +121,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // -- Functions --
 
   async function loadPacks(query, sort) {
-    packsGrid.style.display = 'none';
-    packsEmpty.style.display = 'none';
-    packsLoading.style.display = 'grid';
+    // First load: show skeleton
+    if (isFirstLoad) {
+      packsGrid.style.display = 'none';
+      packsEmpty.style.display = 'none';
+      packsLoading.style.display = 'grid';
+    }
 
     try {
       const params = new URLSearchParams({ sort, limit: '24' });
@@ -139,20 +138,123 @@ document.addEventListener('DOMContentLoaded', () => {
       packsLoading.style.display = 'none';
 
       if (data.packs.length === 0) {
+        if (!isFirstLoad) {
+          await exitCards();
+        }
         packsGrid.style.display = 'none';
         packsEmpty.style.display = 'block';
         packCount.textContent = '0 packs';
+        isFirstLoad = false;
         return;
       }
 
-      packsGrid.innerHTML = data.packs.map(renderPackCard).join('');
-      packsGrid.style.display = 'grid';
+      const newHtml = data.packs.map(renderPackCard).join('');
+
+      if (isFirstLoad) {
+        packsGrid.innerHTML = newHtml;
+        packsGrid.style.display = 'grid';
+        enterCards();
+      } else {
+        await transitionCards(newHtml);
+      }
+
       packCount.textContent = `${data.total} pack${data.total !== 1 ? 's' : ''}`;
+      isFirstLoad = false;
     } catch (err) {
       packsLoading.style.display = 'none';
       packsGrid.innerHTML = '<p style="color:var(--text-muted)">Failed to load packs.</p>';
       packsGrid.style.display = 'grid';
+      isFirstLoad = false;
     }
+  }
+
+  function enterCards() {
+    const cards = packsGrid.querySelectorAll('.pack-card');
+    cards.forEach((card, i) => {
+      card.style.opacity = '0';
+      card.style.transform = 'translateY(12px) scale(0.97)';
+      requestAnimationFrame(() => {
+        card.style.transition = `opacity 0.3s ease ${i * 30}ms, transform 0.3s ease ${i * 30}ms`;
+        card.style.opacity = '1';
+        card.style.transform = 'translateY(0) scale(1)';
+      });
+    });
+  }
+
+  async function exitCards() {
+    const cards = packsGrid.querySelectorAll('.pack-card');
+    if (cards.length === 0) return;
+
+    cards.forEach((card, i) => {
+      card.style.transition = `opacity 0.2s ease ${i * 20}ms, transform 0.2s ease ${i * 20}ms`;
+      card.style.opacity = '0';
+      card.style.transform = 'translateY(-8px) scale(0.97)';
+    });
+
+    const lastDelay = (cards.length - 1) * 20;
+    await wait(200 + lastDelay);
+  }
+
+  async function transitionCards(newHtml) {
+    // Get current card identifiers for diffing
+    const oldCards = packsGrid.querySelectorAll('.pack-card');
+    const oldIds = new Set([...oldCards].map(c => c.dataset.id));
+
+    // Parse new cards to get their IDs
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = newHtml;
+    const newCards = tempDiv.querySelectorAll('.pack-card');
+    const newIds = new Set([...newCards].map(c => c.dataset.id));
+
+    // Find cards to exit (in old but not in new)
+    const exitingCards = [...oldCards].filter(c => !newIds.has(c.dataset.id));
+    // Find cards staying
+    const stayingIds = new Set([...oldIds].filter(id => newIds.has(id)));
+
+    // Phase 1: exit removed cards
+    if (exitingCards.length > 0) {
+      exitingCards.forEach((card, i) => {
+        card.style.transition = `opacity 0.2s ease ${i * 20}ms, transform 0.2s ease ${i * 20}ms`;
+        card.style.opacity = '0';
+        card.style.transform = 'scale(0.95)';
+      });
+      const exitDelay = (exitingCards.length - 1) * 20;
+      await wait(200 + exitDelay);
+    }
+
+    // Phase 2: swap content
+    packsGrid.innerHTML = newHtml;
+    packsGrid.style.display = 'grid';
+
+    // Phase 3: enter new cards with stagger
+    const updatedCards = packsGrid.querySelectorAll('.pack-card');
+    let enterIndex = 0;
+    updatedCards.forEach((card) => {
+      if (stayingIds.has(card.dataset.id)) {
+        // Staying cards: subtle fade to show updated position
+        card.style.opacity = '0.7';
+        card.style.transform = 'scale(1)';
+        requestAnimationFrame(() => {
+          card.style.transition = 'opacity 0.25s ease';
+          card.style.opacity = '1';
+        });
+      } else {
+        // New cards: staggered enter
+        card.style.opacity = '0';
+        card.style.transform = 'translateY(12px) scale(0.97)';
+        const delay = enterIndex * 40;
+        requestAnimationFrame(() => {
+          card.style.transition = `opacity 0.3s ease ${delay}ms, transform 0.3s ease ${delay}ms`;
+          card.style.opacity = '1';
+          card.style.transform = 'translateY(0) scale(1)';
+        });
+        enterIndex++;
+      }
+    });
+  }
+
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   function renderPackCard(pack) {
@@ -164,7 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const installCmd = `mcs pack add ${ownerRepo}`;
 
     return `
-      <div class="pack-card" data-repo="${escapeHtml(pack.repoUrl)}">
+      <div class="pack-card" data-id="${escapeHtml(pack.identifier)}" data-repo="${escapeHtml(pack.repoUrl)}">
         ${banner}
         <a href="${escapeHtml(pack.repoUrl)}" target="_blank" rel="noopener" class="pack-card-link">
           <div class="pack-card-header">
