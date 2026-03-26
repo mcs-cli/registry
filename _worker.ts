@@ -66,16 +66,10 @@ async function handleApiRoute(
 
   // POST /api/reindex (manual trigger — for seeding and scheduled reindex via GitHub Actions)
   if (path === "/api/reindex" && request.method === "POST") {
-    try {
-      await seedFromTechpacksJson(env);
-      await handleReindex(env);
-      return jsonResponse({ message: "Reindex complete" });
-    } catch (e) {
-      return jsonResponse(
-        { error: "Reindex failed", detail: e instanceof Error ? e.message : String(e) },
-        500
-      );
-    }
+    ctx.waitUntil(
+      seedFromTechpacksJson(env).then(() => handleReindex(env))
+    );
+    return jsonResponse({ message: "Reindex triggered" });
   }
 
   return jsonResponse({ error: "Not found" }, 404);
