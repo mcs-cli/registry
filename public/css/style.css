@@ -73,8 +73,8 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;o
 /* ==========================================================================
    Registry — Hero
    ========================================================================== */
-.registry-hero{padding:calc(56px + clamp(4rem,10vw,7rem)) 0 clamp(2rem,5vw,3rem);position:relative;overflow:hidden}
-.registry-hero::before{content:'';position:absolute;top:-50%;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(ellipse at center,var(--purple-glow) 0%,transparent 70%);pointer-events:none;z-index:0}
+.registry-hero{padding:calc(56px + clamp(4rem,10vw,8rem)) 0 clamp(3rem,8vw,6rem);position:relative;overflow:hidden;border-bottom:1px solid var(--border)}
+.registry-hero::before{content:'';position:absolute;top:-400px;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(ellipse at center,var(--purple-glow) 0%,transparent 70%);pointer-events:none;z-index:0}
 .registry-hero .container{position:relative;z-index:1}
 .registry-hero .section-title{font-size:clamp(2rem,1.2rem + 3vw,3.25rem)}
 
