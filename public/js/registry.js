@@ -46,6 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let debounceTimer = null;
   let isFirstLoad = true;
   let statsAnimated = false;
+  const packsCache = new Map();
 
   // -- Elements --
   const searchInput = document.getElementById('search-input');
@@ -56,6 +57,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const submitForm = document.getElementById('submit-form');
   const submitResult = document.getElementById('submit-result');
   const submitBtn = document.getElementById('submit-btn');
+  const packModal = document.getElementById('pack-modal');
+  const packModalInner = packModal.querySelector('.pack-modal-inner');
 
   // -- Init: load from URL query or default --
   const params = new URLSearchParams(window.location.search);
@@ -165,6 +168,8 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      data.packs.forEach(p => packsCache.set(p.slug, p));
+
       const newHtml = data.packs.map(renderPackCard).join('');
 
       if (isFirstLoad) {
@@ -182,6 +187,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       isFirstLoad = false;
+      checkDeepLink();
     } catch (err) {
       packsLoading.style.display = 'none';
       packsGrid.innerHTML = '<p style="color:var(--text-muted)">Failed to load packs.</p>';
@@ -288,9 +294,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const installCmd = `mcs pack add ${ownerRepo}`;
 
     return `
-      <div class="pack-card" data-id="${escapeHtml(pack.slug)}" data-repo="${escapeHtml(pack.repoUrl)}">
+      <div class="pack-card" data-id="${escapeHtml(pack.slug)}" data-repo="${escapeHtml(pack.repoUrl)}" role="button" tabindex="0">
         ${banner}
-        <a href="${escapeHtml(pack.repoUrl)}" target="_blank" rel="noopener" class="pack-card-link">
+        <div class="pack-card-link">
           <div class="pack-card-header">
             <span class="pack-dot pack-dot--${dotColor}"></span>
             <span class="pack-card-name">${escapeHtml(pack.displayName)}</span>
@@ -302,7 +308,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <p class="pack-card-desc">${escapeHtml(pack.description)}</p>
           ${pack.author ? `<div class="pack-card-author">by ${escapeHtml(pack.author)}</div>` : ''}
           <div class="pack-card-badges">${badges}</div>
-        </a>
+        </div>
         <div class="pack-card-meta">
           <span class="pack-card-updated">Updated ${updated}</span>
           <button class="pack-card-copy" onclick="copyInstall(event, '${escapeHtml(installCmd)}')" aria-label="Copy install command">
@@ -391,5 +397,179 @@ document.addEventListener('DOMContentLoaded', () => {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  // -- Pack detail modal --
+
+  // Card click → open modal (delegated)
+  packsGrid.addEventListener('click', (e) => {
+    if (e.target.closest('.pack-card-copy')) return;
+    const card = e.target.closest('.pack-card');
+    if (!card) return;
+    const pack = packsCache.get(card.dataset.id);
+    if (pack) openPackModal(pack);
+  });
+
+  packsGrid.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.target.closest('.pack-card-copy')) return;
+    const card = e.target.closest('.pack-card');
+    if (!card) return;
+    e.preventDefault();
+    const pack = packsCache.get(card.dataset.id);
+    if (pack) openPackModal(pack);
+  });
+
+  // Backdrop click → close
+  packModal.addEventListener('click', (e) => {
+    if (e.target === packModal) closePackModal();
+  });
+
+  // Intercept Escape to use animated close
+  packModal.addEventListener('cancel', (e) => {
+    e.preventDefault();
+    closePackModal();
+  });
+
+  // Clean URL on close
+  packModal.addEventListener('close', () => {
+    document.body.style.overflow = '';
+    packModal.classList.remove('closing');
+    const url = new URL(window.location);
+    if (url.searchParams.has('pack')) {
+      url.searchParams.delete('pack');
+      history.replaceState(null, '', url);
+    }
+  });
+
+  function closePackModal() {
+    packModal.classList.add('closing');
+    packModal.addEventListener('transitionend', () => {
+      packModal.close();
+    }, { once: true });
+  }
+
+  // Browser back button
+  window.addEventListener('popstate', () => {
+    const slug = new URLSearchParams(window.location.search).get('pack');
+    if (!slug && packModal.open) {
+      packModal.close();
+    } else if (slug && !packModal.open) {
+      const pack = packsCache.get(slug);
+      if (pack) openPackModal(pack, true);
+    }
+  });
+
+  function openPackModal(pack, skipPush) {
+    packModalInner.innerHTML = renderModalContent(pack);
+    packModal.showModal();
+    document.body.style.overflow = 'hidden';
+
+    // Wire close button and remove auto-focus outline
+    const closeBtn = packModalInner.querySelector('.pack-modal-close');
+    closeBtn.addEventListener('click', () => closePackModal());
+    closeBtn.blur();
+
+    // Wire install copy button
+    const copyBtn = packModalInner.querySelector('.pack-modal-install-copy');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', () => {
+        const cmd = copyBtn.dataset.cmd;
+        navigator.clipboard.writeText(cmd).then(() => {
+          const textEl = copyBtn.querySelector('.install-text');
+          textEl.textContent = 'Copied!';
+          copyBtn.classList.add('copied');
+          setTimeout(() => {
+            textEl.textContent = 'Copy';
+            copyBtn.classList.remove('copied');
+          }, 1500);
+        });
+      });
+    }
+
+    if (!skipPush) {
+      const url = new URL(window.location);
+      url.searchParams.set('pack', pack.slug);
+      history.pushState(null, '', url);
+    }
+  }
+
+  function renderModalContent(pack) {
+    const dotColor = getDotColor(pack.components);
+    const badges = renderBadges(pack.components);
+    const banner = renderBanner(pack.status);
+    const ownerRepo = pack.repoUrl.replace('https://github.com/', '');
+    const installCmd = `mcs pack add ${ownerRepo}`;
+    const updated = timeAgo(pack.pushedAt);
+
+    const metaRight = [];
+    if (pack.stargazerCount) {
+      metaRight.push(`<span class="pack-modal-meta-item star-count"><svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:var(--amber)"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${pack.stargazerCount}</span>`);
+    }
+    metaRight.push(`<span class="pack-modal-meta-item">Updated ${updated}</span>`);
+    if (pack.latestTag) metaRight.push(`<span class="pack-modal-meta-item">${escapeHtml(pack.latestTag)}</span>`);
+    const metaRightHtml = metaRight.join('<span class="pack-modal-meta-sep">&middot;</span>');
+
+    const keywordsHtml = pack.keywords && pack.keywords.length > 0
+      ? `<div class="pack-modal-section">
+          <div class="pack-modal-section-title">Keywords</div>
+          <div class="pack-modal-keywords">${pack.keywords.map(k => `<span class="pack-modal-keyword">${escapeHtml(k)}</span>`).join('')}</div>
+        </div>`
+      : '';
+
+    return `
+      <div class="pack-modal-header">
+        <span class="pack-dot pack-dot--${dotColor}"></span>
+        <span class="pack-modal-name">${escapeHtml(pack.displayName)}</span>
+        <button class="pack-modal-close" aria-label="Close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      ${banner}
+      <p class="pack-modal-desc">${escapeHtml(pack.description)}</p>
+      <div class="pack-modal-meta">
+        ${pack.author ? `<span class="pack-modal-meta-item">by ${escapeHtml(pack.author)}</span>` : ''}
+        <span class="pack-modal-meta-right">${metaRightHtml}</span>
+      </div>
+      <div class="pack-modal-install">
+        <div class="pack-modal-install-cmd"><span>$ </span>${escapeHtml(installCmd)}</div>
+        <button class="pack-modal-install-copy" data-cmd="${escapeHtml(installCmd)}">
+          <svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
+          <span class="install-text">Copy</span>
+        </button>
+      </div>
+      ${badges ? `<div class="pack-modal-section">
+        <div class="pack-modal-section-title">Components</div>
+        <div class="pack-card-badges">${badges}</div>
+      </div>` : ''}
+      ${keywordsHtml}
+      <div class="pack-modal-actions">
+        <a href="${escapeHtml(pack.repoUrl)}" target="_blank" rel="noopener" class="pack-modal-gh">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+    `;
+  }
+
+  function checkDeepLink() {
+    const slug = new URLSearchParams(window.location.search).get('pack');
+    if (!slug) return;
+
+    const pack = packsCache.get(slug);
+    if (pack) {
+      openPackModal(pack, true);
+      return;
+    }
+
+    // Fallback: fetch single pack if not in listing results
+    fetch(`/api/packs/${slug}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(p => {
+        if (p && p.slug) {
+          packsCache.set(p.slug, p);
+          openPackModal(p, true);
+        }
+      });
   }
 });
