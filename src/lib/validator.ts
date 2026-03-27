@@ -314,7 +314,7 @@ function extractPackData(
   const description = (manifest.description as string) ?? "";
   const identifier = (manifest.identifier as string) ?? "";
 
-  const keywords = extractKeywords(identifier, description, counts);
+  const keywords = extractKeywords(identifier, description);
 
   return {
     identifier,
@@ -344,8 +344,7 @@ function resolveComponentType(comp: Record<string, unknown>): string | null {
 
 function extractKeywords(
   identifier: string,
-  description: string,
-  counts: ComponentCounts
+  description: string
 ): string[] {
   const words = new Set<string>();
 
@@ -363,16 +362,6 @@ function extractKeywords(
       words.add(cleaned);
     }
   }
-
-  // Add component type names as keywords
-  if (counts.mcpServers > 0) words.add("mcp");
-  if (counts.hooks > 0) words.add("hooks");
-  if (counts.skills > 0) words.add("skills");
-  if (counts.commands > 0) words.add("commands");
-  if (counts.agents > 0) words.add("agents");
-  if (counts.brewPackages > 0) words.add("brew");
-  if (counts.plugins > 0) words.add("plugins");
-  if (counts.templates > 0) words.add("templates");
 
   return [...words];
 }
