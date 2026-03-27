@@ -1,4 +1,5 @@
-import type { Env } from "./src/types.js";
+import type { Env, PackEntry } from "./src/types.js";
+import { injectPackOgTags } from "./src/lib/og.js";
 import { handleListPacks, handleGetPack, jsonResponse } from "./src/api/packs.js";
 import { handleSubmit } from "./src/api/submit.js";
 import { handleReindex } from "./src/api/reindex.js";
@@ -34,6 +35,30 @@ export default {
     // API routes
     if (path.startsWith("/api/")) {
       return handleApiRoute(request, env, ctx, path);
+    }
+
+    // Dynamic OG tags for pack deep-links: /?pack=github/owner/repo
+    const packSlug = path === "/" ? url.searchParams.get("pack") : null;
+    if (packSlug) {
+      try {
+        const [pack, assetResponse] = await Promise.all([
+          env.PACKS.get<PackEntry>(`pack:${packSlug}`, "json"),
+          env.ASSETS.fetch(request),
+        ]);
+        if (pack) {
+          const html = await assetResponse.text();
+          return new Response(injectPackOgTags(html, pack, url.href), {
+            status: 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "public, max-age=300, s-maxage=300",
+            },
+          });
+        }
+        return assetResponse;
+      } catch (e) {
+        console.error("[og] Failed to inject OG tags:", e);
+      }
     }
 
     // Static assets are handled by Cloudflare Pages via the asset binding
