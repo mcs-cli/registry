@@ -306,7 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </span>` : ''}
           </div>
           <p class="pack-card-desc">${escapeHtml(pack.description)}</p>
-          ${pack.author ? `<div class="pack-card-author">by ${escapeHtml(pack.author)}</div>` : ''}
+          ${pack.author ? `<div class="pack-card-author" style="color:var(--${dotColor})">by ${escapeHtml(pack.author)}</div>` : ''}
           <div class="pack-card-badges">${badges}</div>
         </div>
         <div class="pack-card-meta">
@@ -528,7 +528,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ${banner}
       <p class="pack-modal-desc">${escapeHtml(pack.description)}</p>
       <div class="pack-modal-meta">
-        ${pack.author ? `<span class="pack-modal-meta-item">by ${escapeHtml(pack.author)}</span>` : ''}
+        ${pack.author ? `<span class="pack-modal-meta-item" style="color:var(--${dotColor})">by ${escapeHtml(pack.author)}</span>` : ''}
         <span class="pack-modal-meta-right">${metaRightHtml}</span>
       </div>
       <div class="pack-modal-install">
