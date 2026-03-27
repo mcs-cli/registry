@@ -111,12 +111,12 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;o
 .packs-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1rem}
 @media(max-width:640px){.packs-grid{grid-template-columns:1fr}}
 
-.pack-card{display:flex;flex-direction:column;padding:1.5rem;border-radius:var(--radius-lg);border:1px solid var(--border);background:var(--bg-elevated);transition:all var(--transition);color:inherit}
+.pack-card{display:flex;flex-direction:column;padding:1.5rem;border-radius:var(--radius-lg);border:1px solid var(--border);background:var(--bg-elevated);transition:all var(--transition);color:inherit;overflow:hidden}
 .pack-card:hover{background:var(--bg-card);border-color:var(--border-bright);transform:translateY(-2px)}
 .pack-card:focus-visible{outline:2px solid var(--purple);outline-offset:2px}
-.pack-card-link{text-decoration:none;color:inherit;flex:1;cursor:pointer}
+.pack-card-link{text-decoration:none;color:inherit;flex:1;cursor:pointer;min-width:0}
 
-.pack-card-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem}
+.pack-card-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;min-width:0}
 .pack-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .pack-dot--purple{background:var(--purple)}
 .pack-dot--teal{background:var(--teal)}
@@ -212,7 +212,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;o
 .pack-modal-inner{overflow-y:auto;max-height:85dvh;padding:2rem}
 
 .pack-modal-header{display:flex;align-items:center;gap:.5rem;margin-bottom:1.25rem}
-.pack-modal-name{font-family:var(--mono);font-size:1.1rem;font-weight:700;color:var(--text-primary);flex:1;min-width:0}
+.pack-modal-name{font-family:var(--mono);font-size:1.1rem;font-weight:700;color:var(--text-primary);flex:1;min-width:0;overflow-wrap:break-word;word-break:break-word}
 .pack-modal-close{margin-left:auto;flex-shrink:0;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-muted);cursor:pointer;padding:.25rem;display:flex;align-items:center;justify-content:center;transition:all var(--transition);outline:none}
 .pack-modal-close:hover{color:var(--text-primary);border-color:var(--border-bright)}
 .pack-modal-close:focus-visible{outline:2px solid var(--purple);outline-offset:2px}
