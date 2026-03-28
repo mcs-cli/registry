@@ -1,37 +1,22 @@
 import * as yaml from "js-yaml";
 import type { ExtractedPackData, ComponentCounts, ValidationResult } from "../types.js";
+import schema from "../../schema/techpack-schema.json";
 
-const VALID_HOOK_EVENTS = new Set([
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Notification",
-  "SubagentStart",
-  "SubagentStop",
-  "Stop",
-  "StopFailure",
-  "TeammateIdle",
-  "TaskCompleted",
-  "ConfigChange",
-  "InstructionsLoaded",
-  "WorktreeCreate",
-  "WorktreeRemove",
-  "PreCompact",
-  "PostCompact",
-  "SessionEnd",
-  "Elicitation",
-  "ElicitationResult",
-]);
+// Derive validation constants from the JSON schema (single source of truth)
+const defs = schema.definitions;
 
-const IDENTIFIER_REGEX = /^[a-z0-9][a-z0-9-]*$/;
+const VALID_HOOK_EVENTS = new Set(defs.component.properties.hookEvent.enum);
+const VALID_COMPONENT_TYPES = new Set(defs.component.properties.type.enum);
+const VALID_SCOPES = new Set(defs.mcpShorthand.properties.scope.enum);
+const VALID_PROMPT_TYPES = new Set(defs.prompt.properties.type.enum);
+const VALID_DOCTOR_CHECK_TYPES = new Set(defs.doctorCheck.properties.type.enum);
 
-const VALID_COMPONENT_TYPES = new Set([
-  "mcpServer", "plugin", "skill", "hookFile", "command",
-  "agent", "brewPackage", "configuration",
-]);
+const IDENTIFIER_PATTERN = schema.properties.identifier.pattern;
+const IDENTIFIER_REGEX = new RegExp(IDENTIFIER_PATTERN);
+const IDENTIFIER_MAX_LENGTH = schema.properties.identifier.maxLength;
+const DISPLAY_NAME_MAX_LENGTH = schema.properties.displayName.maxLength;
+const DESCRIPTION_MAX_LENGTH = schema.properties.description.maxLength;
+const COMPONENT_ID_MAX_LENGTH = defs.component.properties.id.maxLength;
 
 const COMPONENT_TYPE_MAP: Record<string, keyof ComponentCounts> = {
   mcpServer: "mcpServers",
@@ -57,14 +42,6 @@ const SHORTHAND_TYPE_MAP: Record<string, string> = {
   settingsFile: "configuration",
   gitignore: "configuration",
 };
-
-const VALID_SCOPES = new Set(["local", "user", "project"]);
-const VALID_PROMPT_TYPES = new Set(["fileDetect", "input", "select", "script"]);
-const VALID_DOCTOR_CHECK_TYPES = new Set([
-  "commandExists", "fileExists", "directoryExists",
-  "fileContains", "fileNotContains", "shellScript",
-  "hookEventExists", "settingsKeyEquals",
-]);
 
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
@@ -102,7 +79,7 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
   const identifier = manifest.identifier as string | undefined;
   if (identifier && !IDENTIFIER_REGEX.test(identifier)) {
     errors.push(
-      `identifier '${identifier}' must match ^[a-z0-9][a-z0-9-]*$ (lowercase alphanumeric and hyphens, must start with letter or digit)`
+      `identifier '${identifier}' must match ${IDENTIFIER_PATTERN} (lowercase alphanumeric and hyphens, must start with letter or digit)`
     );
   }
 
@@ -179,15 +156,15 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
     }
   }
 
-  // Length limits to prevent abuse
-  if (typeof manifest.identifier === "string" && manifest.identifier.length > 100) {
-    errors.push("'identifier' must not exceed 100 characters");
+  // Length limits (derived from schema maxLength)
+  if (typeof manifest.identifier === "string" && manifest.identifier.length > IDENTIFIER_MAX_LENGTH) {
+    errors.push(`'identifier' must not exceed ${IDENTIFIER_MAX_LENGTH} characters`);
   }
-  if (typeof manifest.displayName === "string" && manifest.displayName.length > 200) {
-    errors.push("'displayName' must not exceed 200 characters");
+  if (typeof manifest.displayName === "string" && manifest.displayName.length > DISPLAY_NAME_MAX_LENGTH) {
+    errors.push(`'displayName' must not exceed ${DISPLAY_NAME_MAX_LENGTH} characters`);
   }
-  if (typeof manifest.description === "string" && manifest.description.length > 2000) {
-    errors.push("'description' must not exceed 2000 characters");
+  if (typeof manifest.description === "string" && manifest.description.length > DESCRIPTION_MAX_LENGTH) {
+    errors.push(`'description' must not exceed ${DESCRIPTION_MAX_LENGTH} characters`);
   }
 
   // schemaVersion must be a number
@@ -290,8 +267,8 @@ function validateComponent(comp: Record<string, unknown>, index: number, errors:
   // id is required, displayName is optional
   if (typeof comp.id !== "string") {
     errors.push(`components[${index}].id is required and must be a string`);
-  } else if (comp.id.length > 100) {
-    errors.push(`components[${index}].id must not exceed 100 characters`);
+  } else if (comp.id.length > COMPONENT_ID_MAX_LENGTH) {
+    errors.push(`components[${index}].id must not exceed ${COMPONENT_ID_MAX_LENGTH} characters`);
   }
   if (comp.displayName !== undefined && typeof comp.displayName !== "string") {
     errors.push(`components[${index}].displayName must be a string`);
