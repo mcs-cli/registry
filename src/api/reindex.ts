@@ -17,7 +17,8 @@ export interface ReindexResult {
   errors: string[];
 }
 
-export async function handleReindex(env: Env): Promise<ReindexResult> {
+export async function handleReindex(env: Env, options?: { force?: boolean }): Promise<ReindexResult> {
+  const force = options?.force ?? false;
   const result: ReindexResult = {
     total: 0,
     updated: 0,
@@ -41,7 +42,7 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
   }
 
   result.total = slugs.length;
-  console.log(`[reindex] Starting reindex of ${slugs.length} packs`);
+  console.log(`[reindex] Starting reindex of ${slugs.length} packs${force ? " (force revalidate)" : ""}`);
 
   // Collect all repo URLs
   const packMap = new Map<string, PackEntry>();
@@ -93,7 +94,7 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
     const pushedAtChanged = pack.pushedAt !== metadata.pushedAt;
     pack.pushedAt = metadata.pushedAt;
 
-    if (pushedAtChanged || pack.status !== "active") {
+    if (force || pushedAtChanged || pack.status !== "active") {
       // Re-fetch and re-validate techpack.yaml
       const parsed = parseGitHubUrl(pack.repoUrl);
       if (!parsed) {

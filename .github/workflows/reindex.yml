@@ -3,7 +3,12 @@ name: Scheduled Reindex
 on:
   schedule:
     - cron: "0 */6 * * *" # Every 6 hours
-  workflow_dispatch: # Manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force revalidation of all packs (bypass pushedAt optimization)"
+        type: boolean
+        default: false
 
 jobs:
   reindex:
@@ -11,9 +16,13 @@ jobs:
     steps:
       - name: Trigger reindex
         run: |
+          REINDEX_URL="${{ secrets.REGISTRY_URL }}/api/reindex"
+          if [ "${{ inputs.force }}" = "true" ]; then
+            REINDEX_URL="${REINDEX_URL}?force=true"
+          fi
           response=$(curl -s -w "\n%{http_code}" -X POST \
             -H "Authorization: Bearer ${{ secrets.REINDEX_SECRET }}" \
-            "${{ secrets.REGISTRY_URL }}/api/reindex")
+            "$REINDEX_URL")
           http_code=$(echo "$response" | tail -1)
           body=$(echo "$response" | sed '$d')
 
