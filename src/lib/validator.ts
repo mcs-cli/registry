@@ -18,6 +18,20 @@ const DISPLAY_NAME_MAX_LENGTH = schema.properties.displayName.maxLength;
 const DESCRIPTION_MAX_LENGTH = schema.properties.description.maxLength;
 const COMPONENT_ID_MAX_LENGTH = defs.component.properties.id.maxLength;
 
+// Fail fast if schema structure changed unexpectedly
+for (const [name, set] of Object.entries({
+  VALID_HOOK_EVENTS, VALID_COMPONENT_TYPES, VALID_SCOPES,
+  VALID_PROMPT_TYPES, VALID_DOCTOR_CHECK_TYPES,
+})) {
+  if (set.size === 0) throw new Error(`Schema derivation failed: ${name} is empty`);
+}
+for (const [name, val] of Object.entries({
+  IDENTIFIER_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH,
+  DESCRIPTION_MAX_LENGTH, COMPONENT_ID_MAX_LENGTH,
+})) {
+  if (typeof val !== "number" || val <= 0) throw new Error(`Schema derivation failed: ${name} is not a positive number`);
+}
+
 const COMPONENT_TYPE_MAP: Record<string, keyof ComponentCounts> = {
   mcpServer: "mcpServers",
   plugin: "plugins",
