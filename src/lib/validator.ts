@@ -1,37 +1,36 @@
 import * as yaml from "js-yaml";
 import type { ExtractedPackData, ComponentCounts, ValidationResult } from "../types.js";
+import schema from "../../schema/techpack-schema.json";
 
-const VALID_HOOK_EVENTS = new Set([
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Notification",
-  "SubagentStart",
-  "SubagentStop",
-  "Stop",
-  "StopFailure",
-  "TeammateIdle",
-  "TaskCompleted",
-  "ConfigChange",
-  "InstructionsLoaded",
-  "WorktreeCreate",
-  "WorktreeRemove",
-  "PreCompact",
-  "PostCompact",
-  "SessionEnd",
-  "Elicitation",
-  "ElicitationResult",
-]);
+// Derive validation constants from the JSON schema (single source of truth)
+const defs = schema.definitions;
 
-const IDENTIFIER_REGEX = /^[a-z0-9][a-z0-9-]*$/;
+const VALID_HOOK_EVENTS = new Set(defs.component.properties.hookEvent.enum);
+const VALID_COMPONENT_TYPES = new Set(defs.component.properties.type.enum);
+const VALID_SCOPES = new Set(defs.mcpShorthand.properties.scope.enum);
+const VALID_PROMPT_TYPES = new Set(defs.prompt.properties.type.enum);
+const VALID_DOCTOR_CHECK_TYPES = new Set(defs.doctorCheck.properties.type.enum);
 
-const VALID_COMPONENT_TYPES = new Set([
-  "mcpServer", "plugin", "skill", "hookFile", "command",
-  "agent", "brewPackage", "configuration",
-]);
+const IDENTIFIER_PATTERN = schema.properties.identifier.pattern;
+const IDENTIFIER_REGEX = new RegExp(IDENTIFIER_PATTERN);
+const IDENTIFIER_MAX_LENGTH = schema.properties.identifier.maxLength;
+const DISPLAY_NAME_MAX_LENGTH = schema.properties.displayName.maxLength;
+const DESCRIPTION_MAX_LENGTH = schema.properties.description.maxLength;
+const COMPONENT_ID_MAX_LENGTH = defs.component.properties.id.maxLength;
+
+// Fail fast if schema structure changed unexpectedly
+for (const [name, set] of Object.entries({
+  VALID_HOOK_EVENTS, VALID_COMPONENT_TYPES, VALID_SCOPES,
+  VALID_PROMPT_TYPES, VALID_DOCTOR_CHECK_TYPES,
+})) {
+  if (set.size === 0) throw new Error(`Schema derivation failed: ${name} is empty`);
+}
+for (const [name, val] of Object.entries({
+  IDENTIFIER_MAX_LENGTH, DISPLAY_NAME_MAX_LENGTH,
+  DESCRIPTION_MAX_LENGTH, COMPONENT_ID_MAX_LENGTH,
+})) {
+  if (typeof val !== "number" || val <= 0) throw new Error(`Schema derivation failed: ${name} is not a positive number`);
+}
 
 const COMPONENT_TYPE_MAP: Record<string, keyof ComponentCounts> = {
   mcpServer: "mcpServers",
@@ -57,14 +56,6 @@ const SHORTHAND_TYPE_MAP: Record<string, string> = {
   settingsFile: "configuration",
   gitignore: "configuration",
 };
-
-const VALID_SCOPES = new Set(["local", "user", "project"]);
-const VALID_PROMPT_TYPES = new Set(["fileDetect", "input", "select", "script"]);
-const VALID_DOCTOR_CHECK_TYPES = new Set([
-  "commandExists", "fileExists", "directoryExists",
-  "fileContains", "fileNotContains", "shellScript",
-  "hookEventExists", "settingsKeyEquals",
-]);
 
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
@@ -102,7 +93,7 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
   const identifier = manifest.identifier as string | undefined;
   if (identifier && !IDENTIFIER_REGEX.test(identifier)) {
     errors.push(
-      `identifier '${identifier}' must match ^[a-z0-9][a-z0-9-]*$ (lowercase alphanumeric and hyphens, must start with letter or digit)`
+      `identifier '${identifier}' must match ${IDENTIFIER_PATTERN} (lowercase alphanumeric and hyphens, must start with letter or digit)`
     );
   }
 
@@ -179,6 +170,17 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
     }
   }
 
+  // Length limits (derived from schema maxLength)
+  if (typeof manifest.identifier === "string" && manifest.identifier.length > IDENTIFIER_MAX_LENGTH) {
+    errors.push(`'identifier' must not exceed ${IDENTIFIER_MAX_LENGTH} characters`);
+  }
+  if (typeof manifest.displayName === "string" && manifest.displayName.length > DISPLAY_NAME_MAX_LENGTH) {
+    errors.push(`'displayName' must not exceed ${DISPLAY_NAME_MAX_LENGTH} characters`);
+  }
+  if (typeof manifest.description === "string" && manifest.description.length > DESCRIPTION_MAX_LENGTH) {
+    errors.push(`'description' must not exceed ${DESCRIPTION_MAX_LENGTH} characters`);
+  }
+
   // schemaVersion must be a number
   if (typeof manifest.schemaVersion !== "number") {
     errors.push("'schemaVersion' is required and must be a number");
@@ -212,6 +214,25 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
     errors.push("'templates' must be an array");
   }
 
+  // A techpack must have at least one component or template
+  const componentsCount = Array.isArray(manifest.components) ? manifest.components.length : 0;
+  const templatesCount = Array.isArray(manifest.templates) ? manifest.templates.length : 0;
+  if (componentsCount === 0 && templatesCount === 0) {
+    errors.push("techpack must contain at least one component or template");
+  }
+
+  // configureProject must be an object with a script field if present
+  if (manifest.configureProject !== undefined) {
+    if (!manifest.configureProject || typeof manifest.configureProject !== "object") {
+      errors.push("'configureProject' must be an object");
+    } else {
+      const cp = manifest.configureProject as Record<string, unknown>;
+      if (typeof cp.script !== "string" || cp.script.length === 0) {
+        errors.push("'configureProject.script' is required and must be a non-empty string");
+      }
+    }
+  }
+
   // prompts must be an array
   if (manifest.prompts !== undefined) {
     if (!Array.isArray(manifest.prompts)) {
@@ -226,7 +247,9 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
         if (typeof prompt.key !== "string") {
           errors.push(`prompts[${i}].key is required and must be a string`);
         }
-        if (prompt.type !== undefined && !VALID_PROMPT_TYPES.has(prompt.type as string)) {
+        if (prompt.type === undefined) {
+          errors.push(`prompts[${i}].type is required`);
+        } else if (!VALID_PROMPT_TYPES.has(prompt.type as string)) {
           errors.push(`prompts[${i}].type must be one of: ${[...VALID_PROMPT_TYPES].join(", ")}`);
         }
       }
@@ -241,7 +264,12 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
       for (let i = 0; i < manifest.supplementaryDoctorChecks.length; i++) {
         const check = manifest.supplementaryDoctorChecks[i] as Record<string, unknown>;
         if (!check || typeof check !== "object") continue;
-        if (check.type !== undefined && !VALID_DOCTOR_CHECK_TYPES.has(check.type as string)) {
+        if (typeof check.name !== "string" || (check.name as string).length === 0) {
+          errors.push(`supplementaryDoctorChecks[${i}].name is required and must be a non-empty string`);
+        }
+        if (check.type === undefined) {
+          errors.push(`supplementaryDoctorChecks[${i}].type is required`);
+        } else if (!VALID_DOCTOR_CHECK_TYPES.has(check.type as string)) {
           errors.push(`supplementaryDoctorChecks[${i}].type must be one of: ${[...VALID_DOCTOR_CHECK_TYPES].join(", ")}`);
         }
       }
@@ -253,9 +281,16 @@ function validateComponent(comp: Record<string, unknown>, index: number, errors:
   // id is required, displayName is optional
   if (typeof comp.id !== "string") {
     errors.push(`components[${index}].id is required and must be a string`);
+  } else if (comp.id.length > COMPONENT_ID_MAX_LENGTH) {
+    errors.push(`components[${index}].id must not exceed ${COMPONENT_ID_MAX_LENGTH} characters`);
   }
   if (comp.displayName !== undefined && typeof comp.displayName !== "string") {
     errors.push(`components[${index}].displayName must be a string`);
+  }
+
+  // description is required on components
+  if (typeof comp.description !== "string" || (comp.description as string).length === 0) {
+    errors.push(`components[${index}].description is required and must be a non-empty string`);
   }
 
   // Resolve type (shorthand or explicit)
@@ -264,6 +299,11 @@ function validateComponent(comp: Record<string, unknown>, index: number, errors:
   // If explicit type field, validate it
   if (comp.type !== undefined && typeof comp.type === "string" && !VALID_COMPONENT_TYPES.has(comp.type)) {
     errors.push(`components[${index}].type '${comp.type}' is not a valid component type`);
+  }
+
+  // Component must have a resolvable type (via shorthand or explicit type field)
+  if (!resolvedType) {
+    errors.push(`components[${index}] must have a type (via 'type' field or a shorthand like mcp, hook, skill, etc.)`);
   }
 
   // Scope validation
@@ -280,8 +320,6 @@ function validateComponent(comp: Record<string, unknown>, index: number, errors:
   if (comp.hookAsync !== undefined && typeof comp.hookAsync !== "boolean") {
     errors.push(`components[${index}].hookAsync must be a boolean`);
   }
-
-  return void resolvedType; // use resolvedType to avoid unused warning
 }
 
 function extractPackData(

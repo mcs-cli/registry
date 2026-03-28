@@ -40,6 +40,7 @@ jobs:
           unchanged=$(echo "$body" | jq -r '.unchanged // 0')
           unavailable=$(echo "$body" | jq -r '.unavailable // 0')
           invalid=$(echo "$body" | jq -r '.invalid // 0')
+          removed=$(echo "$body" | jq -r '.removed // 0')
           errors=$(echo "$body" | jq -r '.errors // []')
           error_count=$(echo "$errors" | jq -r 'length')
 
@@ -61,6 +62,7 @@ jobs:
           | Unchanged | $unchanged |
           | Unavailable | $unavailable |
           | Invalid | $invalid |
+          | Removed from index | $removed |
           | Errors | $error_count |
           EOF
 

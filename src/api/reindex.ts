@@ -13,6 +13,7 @@ export interface ReindexResult {
   unchanged: number;
   unavailable: number;
   invalid: number;
+  removed: number;
   errors: string[];
 }
 
@@ -23,6 +24,7 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
     unchanged: 0,
     unavailable: 0,
     invalid: 0,
+    removed: 0,
     errors: [],
   };
 
@@ -121,7 +123,8 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
         pack.status = "invalid";
         pack.indexedAt = new Date().toISOString();
         await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-        console.log(`[reindex] "${slug}" → invalid (validation failed)`);
+        console.log(`[reindex] "${slug}" → invalid: ${validation.errors.join("; ")}`);
+        result.errors.push(`${slug}: ${validation.errors.join("; ")}`);
         result.invalid++;
         continue;
       }
@@ -144,8 +147,21 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
   }
 
+  // Remove invalid and unavailable packs from the index (preserve slugs missing from KV)
+  const activeSlugs = slugs.filter((slug) => {
+    const pack = packMap.get(slug);
+    if (!pack) return true; // KV read may have failed — keep in index for next run
+    return pack.status === "active";
+  });
+
+  if (activeSlugs.length !== slugs.length) {
+    result.removed = slugs.length - activeSlugs.length;
+    await env.PACKS.put("index:all", JSON.stringify(activeSlugs));
+    console.log(`[reindex] Pruned ${result.removed} non-active packs from index`);
+  }
+
   console.log(
-    `[reindex] Done — ${result.updated} updated, ${result.unchanged} unchanged, ${result.unavailable} unavailable, ${result.invalid} invalid, ${result.errors.length} errors`
+    `[reindex] Done — ${result.updated} updated, ${result.unchanged} unchanged, ${result.unavailable} unavailable, ${result.invalid} invalid, ${result.removed} removed, ${result.errors.length} errors`
   );
   return result;
 }
