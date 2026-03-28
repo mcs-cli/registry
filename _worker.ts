@@ -34,7 +34,7 @@ export default {
 
     // API routes
     if (path.startsWith("/api/")) {
-      return handleApiRoute(request, env, ctx, path);
+      return handleApiRoute(request, env, ctx, url);
     }
 
     // Dynamic OG tags for pack deep-links: /?pack=github/owner/repo
@@ -70,8 +70,9 @@ async function handleApiRoute(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
-  path: string
+  url: URL
 ): Promise<Response> {
+  const path = url.pathname;
   // GET /api/packs
   if (path === "/api/packs" && request.method === "GET") {
     return handleListPacks(request, env, ctx);
@@ -99,7 +100,8 @@ async function handleApiRoute(
     }
     try {
       await seedFromTechpacksJson(env);
-      const result = await handleReindex(env);
+      const force = url.searchParams.get("force") === "true";
+      const result = await handleReindex(env, { force });
       return jsonResponse({ message: "Reindex complete", ...result });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
