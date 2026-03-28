@@ -179,6 +179,17 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
     }
   }
 
+  // Length limits to prevent abuse
+  if (typeof manifest.identifier === "string" && manifest.identifier.length > 100) {
+    errors.push("'identifier' must not exceed 100 characters");
+  }
+  if (typeof manifest.displayName === "string" && manifest.displayName.length > 200) {
+    errors.push("'displayName' must not exceed 200 characters");
+  }
+  if (typeof manifest.description === "string" && manifest.description.length > 2000) {
+    errors.push("'description' must not exceed 2000 characters");
+  }
+
   // schemaVersion must be a number
   if (typeof manifest.schemaVersion !== "number") {
     errors.push("'schemaVersion' is required and must be a number");
@@ -212,6 +223,25 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
     errors.push("'templates' must be an array");
   }
 
+  // A techpack must have at least one component or template
+  const componentsCount = Array.isArray(manifest.components) ? manifest.components.length : 0;
+  const templatesCount = Array.isArray(manifest.templates) ? manifest.templates.length : 0;
+  if (componentsCount === 0 && templatesCount === 0) {
+    errors.push("techpack must contain at least one component or template");
+  }
+
+  // configureProject must be an object with a script field if present
+  if (manifest.configureProject !== undefined) {
+    if (!manifest.configureProject || typeof manifest.configureProject !== "object") {
+      errors.push("'configureProject' must be an object");
+    } else {
+      const cp = manifest.configureProject as Record<string, unknown>;
+      if (typeof cp.script !== "string" || cp.script.length === 0) {
+        errors.push("'configureProject.script' is required and must be a non-empty string");
+      }
+    }
+  }
+
   // prompts must be an array
   if (manifest.prompts !== undefined) {
     if (!Array.isArray(manifest.prompts)) {
@@ -241,7 +271,12 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
       for (let i = 0; i < manifest.supplementaryDoctorChecks.length; i++) {
         const check = manifest.supplementaryDoctorChecks[i] as Record<string, unknown>;
         if (!check || typeof check !== "object") continue;
-        if (check.type !== undefined && !VALID_DOCTOR_CHECK_TYPES.has(check.type as string)) {
+        if (typeof check.name !== "string" || (check.name as string).length === 0) {
+          errors.push(`supplementaryDoctorChecks[${i}].name is required and must be a non-empty string`);
+        }
+        if (check.type === undefined) {
+          errors.push(`supplementaryDoctorChecks[${i}].type is required`);
+        } else if (!VALID_DOCTOR_CHECK_TYPES.has(check.type as string)) {
           errors.push(`supplementaryDoctorChecks[${i}].type must be one of: ${[...VALID_DOCTOR_CHECK_TYPES].join(", ")}`);
         }
       }
@@ -253,9 +288,16 @@ function validateComponent(comp: Record<string, unknown>, index: number, errors:
   // id is required, displayName is optional
   if (typeof comp.id !== "string") {
     errors.push(`components[${index}].id is required and must be a string`);
+  } else if (comp.id.length > 100) {
+    errors.push(`components[${index}].id must not exceed 100 characters`);
   }
   if (comp.displayName !== undefined && typeof comp.displayName !== "string") {
     errors.push(`components[${index}].displayName must be a string`);
+  }
+
+  // description is required on components
+  if (typeof comp.description !== "string" || (comp.description as string).length === 0) {
+    errors.push(`components[${index}].description is required and must be a non-empty string`);
   }
 
   // Resolve type (shorthand or explicit)
@@ -264,6 +306,11 @@ function validateComponent(comp: Record<string, unknown>, index: number, errors:
   // If explicit type field, validate it
   if (comp.type !== undefined && typeof comp.type === "string" && !VALID_COMPONENT_TYPES.has(comp.type)) {
     errors.push(`components[${index}].type '${comp.type}' is not a valid component type`);
+  }
+
+  // Component must have a resolvable type (via shorthand or explicit type field)
+  if (!resolvedType) {
+    errors.push(`components[${index}] must have a type (via 'type' field or a shorthand like mcp, hook, skill, etc.)`);
   }
 
   // Scope validation
@@ -280,8 +327,6 @@ function validateComponent(comp: Record<string, unknown>, index: number, errors:
   if (comp.hookAsync !== undefined && typeof comp.hookAsync !== "boolean") {
     errors.push(`components[${index}].hookAsync must be a boolean`);
   }
-
-  return void resolvedType; // use resolvedType to avoid unused warning
 }
 
 function extractPackData(

@@ -13,6 +13,7 @@ export interface ReindexResult {
   unchanged: number;
   unavailable: number;
   invalid: number;
+  removed: number;
   errors: string[];
 }
 
@@ -23,6 +24,7 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
     unchanged: 0,
     unavailable: 0,
     invalid: 0,
+    removed: 0,
     errors: [],
   };
 
@@ -142,6 +144,18 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
 
     pack.indexedAt = new Date().toISOString();
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
+  }
+
+  // Remove invalid and unavailable packs from the index
+  const activeSlugs = slugs.filter((slug) => {
+    const pack = packMap.get(slug);
+    return pack && pack.status === "active";
+  });
+
+  if (activeSlugs.length !== slugs.length) {
+    result.removed = slugs.length - activeSlugs.length;
+    await env.PACKS.put("index:all", JSON.stringify(activeSlugs));
+    console.log(`[reindex] Pruned ${result.removed} non-active packs from index`);
   }
 
   console.log(
