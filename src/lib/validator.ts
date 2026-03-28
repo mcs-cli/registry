@@ -256,7 +256,9 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
         if (typeof prompt.key !== "string") {
           errors.push(`prompts[${i}].key is required and must be a string`);
         }
-        if (prompt.type !== undefined && !VALID_PROMPT_TYPES.has(prompt.type as string)) {
+        if (prompt.type === undefined) {
+          errors.push(`prompts[${i}].type is required`);
+        } else if (!VALID_PROMPT_TYPES.has(prompt.type as string)) {
           errors.push(`prompts[${i}].type must be one of: ${[...VALID_PROMPT_TYPES].join(", ")}`);
         }
       }
