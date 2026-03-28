@@ -77,10 +77,14 @@ export async function handleSubmit(
   const existingRaw = await env.PACKS.get(`pack:${slug}`);
   if (existingRaw) {
     const existing = JSON.parse(existingRaw) as PackEntry;
-    return jsonResponse(
-      { error: `This repository is already registered as '${existing.displayName}'.`, pack: existing },
-      409
-    );
+    // Allow re-submission of packs that were previously marked invalid or unavailable
+    if (existing.status === "active") {
+      return jsonResponse(
+        { error: `This repository is already registered as '${existing.displayName}'.`, pack: existing },
+        409
+      );
+    }
+    // Non-active pack — allow re-submission, will be overwritten below
   }
 
   // Fetch repo metadata
