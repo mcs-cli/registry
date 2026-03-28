@@ -14,16 +14,19 @@
     "identifier": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "maxLength": 100,
       "description": "Unique pack identifier. Lowercase alphanumeric and hyphens only."
     },
     "displayName": {
       "type": "string",
       "minLength": 1,
+      "maxLength": 200,
       "description": "Human-readable pack name."
     },
     "description": {
       "type": "string",
       "minLength": 1,
+      "maxLength": 2000,
       "description": "Short description of the pack."
     },
     "author": {
@@ -68,6 +71,7 @@
         "id": {
           "type": "string",
           "minLength": 1,
+          "maxLength": 100,
           "description": "Short component ID. Must not contain dots."
         },
         "displayName": {
