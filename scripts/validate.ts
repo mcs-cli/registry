@@ -5,9 +5,9 @@
  * Usage: npx tsx scripts/validate.ts
  *
  * Required env vars:
- *   GITHUB_TOKEN     — GitHub token for API access
- *   REGISTRY_URL     — Registry API base URL (e.g., https://techpacks.mcs-cli.dev)
- *   REINDEX_SECRET   — Auth token for the update-status endpoint
+ *   GITHUB_TOKEN          — GitHub token for API access and issue filing (provided by Actions)
+ *   REGISTRY_URL          — Registry API base URL (e.g., https://techpacks.mcs-cli.dev)
+ *   REINDEX_SECRET        — Auth token for the update-status endpoint
  */
 import { validateTechpackYaml, validateFileReferences } from "../src/lib/validator.js";
 import type { RepoTree } from "../src/types.js";
@@ -15,6 +15,7 @@ import type { RepoTree } from "../src/types.js";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN ?? "";
 const REGISTRY_URL = process.env.REGISTRY_URL ?? "https://techpacks.mcs-cli.dev";
 const REINDEX_SECRET = process.env.REINDEX_SECRET ?? "";
+const REGISTRY_REPO = "mcs-cli/registry";
 
 if (!GITHUB_TOKEN) {
   console.error("GITHUB_TOKEN is required");
@@ -191,6 +192,124 @@ async function updatePackStatus(
   return res.ok;
 }
 
+// -- Issue filing (on the registry repo) --
+
+const ISSUE_TAG = "[Validation]";
+const ISSUE_HEADERS: Record<string, string> = {
+  ...GH_HEADERS,
+  "Content-Type": "application/json",
+};
+
+async function hasOpenIssue(slug: string): Promise<boolean> {
+  const query = encodeURIComponent(`repo:${REGISTRY_REPO} is:issue is:open "${ISSUE_TAG} ${slug}" in:title`);
+  const res = await fetch(`https://api.github.com/search/issues?q=${query}&per_page=1`, {
+    headers: ISSUE_HEADERS,
+  });
+  if (!res.ok) return false;
+  const data = (await res.json()) as { total_count: number };
+  return data.total_count > 0;
+}
+
+async function fileIssue(report: ValidationReport, repoUrl: string): Promise<string | null> {
+  const errorList = report.errors.map((e) => `- ${e}`).join("\n");
+  const warningList = report.warnings.length > 0
+    ? `\n### Warnings\n\n${report.warnings.map((w) => `- ${w}`).join("\n")}\n`
+    : "";
+  const hintList = report.heuristics.length > 0
+    ? `\n### Hints\n\n${report.heuristics.map((h) => `- ${h}`).join("\n")}\n`
+    : "";
+
+  const body = `## Validation failed for ${report.displayName}
+
+**Pack:** \`${report.slug}\`
+**Repo:** ${repoUrl}
+**Previous status:** ${report.previousStatus}
+
+### Errors
+
+${errorList}
+${warningList}${hintList}
+### How to fix
+
+1. Check that all file paths in \`techpack.yaml\` point to files that actually exist in the repository
+2. Ensure the pack has at least one component or template
+3. Push the fix to the default branch — the registry will automatically re-validate on the next cycle
+
+Once the issues are resolved, this pack will be restored to **active** status and this issue can be closed.
+
+---
+*Filed automatically by the [deep validation workflow](https://github.com/${REGISTRY_REPO}/actions/workflows/validate.yml)*`;
+
+  const res = await fetch(`https://api.github.com/repos/${REGISTRY_REPO}/issues`, {
+    method: "POST",
+    headers: ISSUE_HEADERS,
+    body: JSON.stringify({
+      title: `${ISSUE_TAG} ${report.slug} — validation failed`,
+      body,
+      labels: ["validation"],
+    }),
+  });
+
+  if (!res.ok) {
+    // Label might not exist yet — retry without labels
+    if (res.status === 422) {
+      const retry = await fetch(`https://api.github.com/repos/${REGISTRY_REPO}/issues`, {
+        method: "POST",
+        headers: ISSUE_HEADERS,
+        body: JSON.stringify({
+          title: `${ISSUE_TAG} ${report.slug} — validation failed`,
+          body,
+        }),
+      });
+      if (!retry.ok) return null;
+      const retryData = (await retry.json()) as { html_url: string };
+      return retryData.html_url;
+    }
+    return null;
+  }
+  const data = (await res.json()) as { html_url: string };
+  return data.html_url;
+}
+
+interface IssueResult {
+  slug: string;
+  url?: string;
+  skipped?: boolean;
+  failed?: boolean;
+}
+
+async function fileIssuesForNewlyInvalid(reports: ValidationReport[], packs: PackInfo[]): Promise<IssueResult[]> {
+  const results: IssueResult[] = [];
+  const newlyInvalid = reports.filter((r) => r.statusChanged && r.newStatus === "invalid");
+  if (newlyInvalid.length === 0) return results;
+
+  console.log(`\nFiling issues for ${newlyInvalid.length} newly invalid pack(s)...`);
+
+  for (const report of newlyInvalid) {
+    const pack = packs.find((p) => p.slug === report.slug);
+    if (!pack) continue;
+
+    // Check for existing open issue first
+    const existing = await hasOpenIssue(report.slug);
+    if (existing) {
+      console.log(`  ${report.slug} — open issue already exists, skipping`);
+      results.push({ slug: report.slug, skipped: true });
+      continue;
+    }
+
+    const issueUrl = await fileIssue(report, pack.repoUrl);
+    if (issueUrl) {
+      console.log(`  ${report.slug} — issue filed: ${issueUrl}`);
+      results.push({ slug: report.slug, url: issueUrl });
+    } else {
+      console.log(`  ${report.slug} — failed to file issue`);
+      results.push({ slug: report.slug, failed: true });
+    }
+  }
+
+  return results;
+}
+
 // -- Main --
 
 async function validatePack(pack: PackInfo): Promise<ValidationReport> {
@@ -303,6 +422,7 @@ async function main() {
   const valid = reports.filter((r) => r.newStatus === "active");
   const invalid = reports.filter((r) => r.newStatus === "invalid");
   const changed = reports.filter((r) => r.statusChanged);
+  const withWarnings = reports.filter((r) => r.warnings.length > 0 && r.newStatus === "active");
   const withHeuristics = reports.filter((r) => r.heuristics.length > 0);
 
   console.log("\n=== Summary ===\n");
@@ -310,43 +430,101 @@ async function main() {
   console.log(`  Valid:           ${valid.length}`);
   console.log(`  Invalid:         ${invalid.length}`);
   console.log(`  Status changed:  ${changed.length}`);
+  console.log(`  With warnings:   ${withWarnings.length}`);
   console.log(`  With hints:      ${withHeuristics.length}`);
+
+  // File issues for newly invalid packs (before step summary so we can include links)
+  const issueResults = await fileIssuesForNewlyInvalid(reports, packs);
 
   // GitHub Actions step summary
   if (process.env.GITHUB_STEP_SUMMARY) {
     const { writeFileSync } = await import("fs");
-    let summary = `## 🔍 Deep Validation Report\n\n`;
+    let summary = `## Deep Validation Report\n\n`;
+
+    // Overview table
     summary += `| Metric | Count |\n|--------|-------|\n`;
     summary += `| Total packs | ${reports.length} |\n`;
-    summary += `| Valid | ${valid.length} |\n`;
+    summary += `| Active | ${valid.length} |\n`;
     summary += `| Invalid | ${invalid.length} |\n`;
     summary += `| Status changed | ${changed.length} |\n`;
+    summary += `| With warnings | ${withWarnings.length} |\n`;
     summary += `| With hints | ${withHeuristics.length} |\n\n`;
 
+    // Per-pack results table
+    summary += `### Pack Results\n\n`;
+    summary += `| Pack | Status | Issues |\n|------|--------|--------|\n`;
+    for (const r of reports) {
+      const icon = r.newStatus === "active" ? "pass" : "FAIL";
+      const change = r.statusChanged ? ` (was ${r.previousStatus})` : "";
+      const issues: string[] = [];
+      if (r.errors.length > 0) issues.push(`${r.errors.length} error(s)`);
+      if (r.warnings.length > 0) issues.push(`${r.warnings.length} warning(s)`);
+      if (r.heuristics.length > 0) issues.push(`${r.heuristics.length} hint(s)`);
+      summary += `| \`${r.slug}\` | ${icon}${change} | ${issues.join(", ") || "—"} |\n`;
+    }
+    summary += `\n`;
+
+    // Detailed invalid packs
     if (invalid.length > 0) {
-      summary += `### ❌ Invalid Packs\n\n`;
+      summary += `### Invalid Packs\n\n`;
       for (const r of invalid) {
-        summary += `**${r.slug}** — ${r.displayName}\n`;
+        summary += `<details>\n<summary><b>${r.slug}</b> — ${r.displayName}</summary>\n\n`;
+        summary += `**Errors:**\n`;
         for (const err of r.errors) summary += `- ${err}\n`;
-        summary += `\n`;
+        if (r.warnings.length > 0) {
+          summary += `\n**Warnings:**\n`;
+          for (const w of r.warnings) summary += `- ${w}\n`;
+        }
+        if (r.heuristics.length > 0) {
+          summary += `\n**Hints:**\n`;
+          for (const h of r.heuristics) summary += `- ${h}\n`;
+        }
+        summary += `\n</details>\n\n`;
       }
     }
 
+    // Status changes
     if (changed.length > 0) {
-      summary += `### 🔄 Status Changes\n\n`;
+      summary += `### Status Changes\n\n`;
       for (const r of changed) {
-        summary += `- **${r.slug}**: ${r.previousStatus} → ${r.newStatus}\n`;
+        summary += `- **${r.slug}**: \`${r.previousStatus}\` → \`${r.newStatus}\`\n`;
       }
       summary += `\n`;
     }
 
-    if (withHeuristics.length > 0) {
-      summary += `### 💡 Heuristic Hints\n\n`;
-      for (const r of withHeuristics) {
-        summary += `**${r.slug}**\n`;
-        for (const h of r.heuristics) summary += `- ${h}\n`;
-        summary += `\n`;
+    // Warnings on valid packs
+    if (withWarnings.length > 0) {
+      summary += `### Warnings on Active Packs\n\n`;
+      for (const r of withWarnings) {
+        summary += `<details>\n<summary><b>${r.slug}</b></summary>\n\n`;
+        for (const w of r.warnings) summary += `- ${w}\n`;
+        summary += `\n</details>\n\n`;
       }
+    }
+
+    // Heuristic hints
+    if (withHeuristics.length > 0) {
+      summary += `### Heuristic Hints\n\n`;
+      for (const r of withHeuristics) {
+        summary += `<details>\n<summary><b>${r.slug}</b> (${r.heuristics.length} hint${r.heuristics.length > 1 ? "s" : ""})</summary>\n\n`;
+        for (const h of r.heuristics) summary += `- ${h}\n`;
+        summary += `\n</details>\n\n`;
+      }
+    }
+
+    // Filed issues
+    if (issueResults.length > 0) {
+      summary += `### Filed Issues\n\n`;
+      for (const ir of issueResults) {
+        if (ir.url) {
+          summary += `- **${ir.slug}**: [Issue filed](${ir.url})\n`;
+        } else if (ir.skipped) {
+          summary += `- **${ir.slug}**: Open issue already exists\n`;
+        } else if (ir.failed) {
+          summary += `- **${ir.slug}**: Failed to file issue\n`;
+        }
+      }
+      summary += `\n`;
     }
 
     writeFileSync(process.env.GITHUB_STEP_SUMMARY, summary, { flag: "a" });
@@ -355,11 +533,11 @@ async function main() {
   // Exit with error if any status transitions to invalid
   const newlyInvalid = reports.filter((r) => r.statusChanged && r.newStatus === "invalid");
   if (newlyInvalid.length > 0) {
-    console.log(`\n⚠️  ${newlyInvalid.length} pack(s) newly marked invalid`);
+    console.log(`\n${newlyInvalid.length} pack(s) newly marked invalid`);
     process.exit(1);
   }
 
-  console.log("\n✅ All done");
+  console.log("\n=== Done ===");
 }
 
 main().catch((err) => {
