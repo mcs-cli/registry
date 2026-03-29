@@ -13,6 +13,8 @@ export interface PackEntry {
   keywords: string[];
   status: PackStatus;
   indexedAt: string;
+  warnings?: string[];
+  validationErrors?: string[];
 }
 
 export type PackStatus = "active" | "unavailable" | "invalid";
@@ -41,7 +43,14 @@ export interface RepoMetadata {
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
+  warnings: string[];
   packData?: ExtractedPackData;
+  manifest?: Record<string, unknown>;
+}
+
+export interface RepoTree {
+  files: Set<string>;
+  directories: Set<string>;
 }
 
 export interface ExtractedPackData {

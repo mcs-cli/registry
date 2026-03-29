@@ -1,7 +1,7 @@
 import type { Env, PackEntry, SubmitRequest } from "../types.js";
-import { fetchRepoMetadata, fetchTechpackYaml, parseGitHubUrl } from "../lib/github.js";
+import { fetchRepoMetadata, fetchRepoTree, fetchTechpackYaml, parseGitHubUrl } from "../lib/github.js";
 import { verifyTurnstile } from "../lib/turnstile.js";
-import { validateTechpackYaml } from "../lib/validator.js";
+import { validateTechpackYaml, validateFileReferences } from "../lib/validator.js";
 import { jsonResponse } from "./packs.js";
 
 const MAX_SUBMISSIONS_PER_HOUR = 5;
@@ -122,6 +122,30 @@ export async function handleSubmit(
     );
   }
 
+  // File-existence validation
+  let fileWarnings: string[] = [];
+  const repoTree = await fetchRepoTree(
+    parsed.owner,
+    parsed.repo,
+    metadata.defaultBranch,
+    env.GITHUB_TOKEN
+  );
+
+  if (repoTree && validation.manifest) {
+    const fileValidation = validateFileReferences(validation.manifest, repoTree);
+    if (fileValidation.errors.length > 0) {
+      return jsonResponse(
+        {
+          error: "techpack.yaml references files that don't exist in the repository.",
+          details: fileValidation.errors,
+          warnings: fileValidation.warnings,
+        },
+        422
+      );
+    }
+    fileWarnings = fileValidation.warnings;
+  }
+
   // Build pack entry
   const pack: PackEntry = {
     slug,
@@ -138,6 +162,7 @@ export async function handleSubmit(
     keywords: validation.packData.keywords,
     status: "active",
     indexedAt: new Date().toISOString(),
+    warnings: fileWarnings.length > 0 ? fileWarnings : undefined,
   };
 
   // Store in KV

@@ -5,10 +5,11 @@ import { handleSubmit } from "./src/api/submit.js";
 import { handleReindex } from "./src/api/reindex.js";
 import {
   fetchRepoMetadata,
+  fetchRepoTree,
   fetchTechpackYaml,
   parseGitHubUrl,
 } from "./src/lib/github.js";
-import { validateTechpackYaml } from "./src/lib/validator.js";
+import { validateTechpackYaml, validateFileReferences } from "./src/lib/validator.js";
 
 export default {
   async fetch(
@@ -140,24 +141,70 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
     if (!yamlContent) continue;
 
     const validation = validateTechpackYaml(yamlContent);
-    if (!validation.valid || !validation.packData) continue;
-
     const slug = `github/${parsed.owner}/${parsed.repo}`;
-    const pack = {
+    const canonicalUrl = `https://github.com/${parsed.owner}/${parsed.repo}`;
+
+    if (!validation.valid || !validation.packData) {
+      // Store as invalid instead of silently skipping
+      const invalidPack: PackEntry = {
+        slug,
+        identifier: "",
+        displayName: "",
+        description: "",
+        author: null,
+        repoUrl: canonicalUrl,
+        defaultBranch: metadata.defaultBranch,
+        latestTag: metadata.latestTag,
+        stargazerCount: metadata.stargazerCount,
+        pushedAt: metadata.pushedAt,
+        components: { mcpServers: 0, hooks: 0, skills: 0, commands: 0, agents: 0, brewPackages: 0, plugins: 0, configurations: 0, templates: 0 },
+        keywords: [],
+        status: "invalid",
+        indexedAt: new Date().toISOString(),
+        validationErrors: validation.errors,
+      };
+      await env.PACKS.put(`pack:${slug}`, JSON.stringify(invalidPack));
+      slugs.push(slug);
+      continue;
+    }
+
+    // File-existence validation
+    const repoTree = await fetchRepoTree(
+      parsed.owner,
+      parsed.repo,
+      metadata.defaultBranch,
+      env.GITHUB_TOKEN
+    );
+
+    let fileWarnings: string[] | undefined;
+    let fileErrors: string[] | undefined;
+    if (repoTree && validation.manifest) {
+      const fileValidation = validateFileReferences(validation.manifest, repoTree);
+      if (fileValidation.errors.length > 0) {
+        fileErrors = fileValidation.errors;
+      }
+      if (fileValidation.warnings.length > 0) {
+        fileWarnings = fileValidation.warnings;
+      }
+    }
+
+    const pack: PackEntry = {
       slug,
       identifier: validation.packData.identifier,
       displayName: validation.packData.displayName,
       description: validation.packData.description,
       author: validation.packData.author,
-      repoUrl: `https://github.com/${parsed.owner}/${parsed.repo}`,
+      repoUrl: canonicalUrl,
       defaultBranch: metadata.defaultBranch,
       latestTag: metadata.latestTag,
       stargazerCount: metadata.stargazerCount,
       pushedAt: metadata.pushedAt,
       components: validation.packData.components,
       keywords: validation.packData.keywords,
-      status: "active" as const,
+      status: fileErrors ? "invalid" : "active",
       indexedAt: new Date().toISOString(),
+      warnings: fileWarnings,
+      validationErrors: fileErrors,
     };
 
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));

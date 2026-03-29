@@ -2,10 +2,11 @@ import type { Env, PackEntry } from "../types.js";
 import {
   batchFetchRepoMetadata,
   fetchRepoMetadata,
+  fetchRepoTree,
   fetchTechpackYaml,
   parseGitHubUrl,
 } from "../lib/github.js";
-import { validateTechpackYaml } from "../lib/validator.js";
+import { validateTechpackYaml, validateFileReferences } from "../lib/validator.js";
 
 export interface ReindexResult {
   total: number;
@@ -130,12 +131,39 @@ export async function handleReindex(env: Env, options?: { force?: boolean }): Pr
         continue;
       }
 
+      // File-existence validation
+      const repoTree = await fetchRepoTree(
+        parsed.owner,
+        parsed.repo,
+        metadata.defaultBranch,
+        env.GITHUB_TOKEN
+      );
+
+      let fileWarnings: string[] = [];
+      if (repoTree && validation.manifest) {
+        const fileValidation = validateFileReferences(validation.manifest, repoTree);
+        if (fileValidation.errors.length > 0) {
+          pack.status = "invalid";
+          pack.validationErrors = fileValidation.errors;
+          pack.warnings = fileValidation.warnings.length > 0 ? fileValidation.warnings : undefined;
+          pack.indexedAt = new Date().toISOString();
+          await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
+          console.log(`[reindex] "${slug}" → invalid: missing files: ${fileValidation.errors.join("; ")}`);
+          result.errors.push(`${slug}: ${fileValidation.errors.join("; ")}`);
+          result.invalid++;
+          continue;
+        }
+        fileWarnings = fileValidation.warnings;
+      }
+
       // Update from fresh data
       pack.displayName = validation.packData.displayName;
       pack.description = validation.packData.description;
       pack.author = validation.packData.author;
       pack.components = validation.packData.components;
       pack.keywords = validation.packData.keywords;
+      pack.warnings = fileWarnings.length > 0 ? fileWarnings : undefined;
+      pack.validationErrors = undefined;
       pack.status = "active";
       console.log(`[reindex] "${slug}" → updated`);
       result.updated++;
@@ -209,9 +237,32 @@ export async function reindexSinglePack(
   const validation = validateTechpackYaml(yamlContent);
   if (!validation.valid || !validation.packData) {
     pack.status = "invalid";
+    pack.validationErrors = validation.errors;
     pack.indexedAt = new Date().toISOString();
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
     return;
+  }
+
+  // File-existence validation
+  const repoTree = await fetchRepoTree(
+    parsed.owner,
+    parsed.repo,
+    metadata.defaultBranch,
+    env.GITHUB_TOKEN
+  );
+
+  let fileWarnings: string[] = [];
+  if (repoTree && validation.manifest) {
+    const fileValidation = validateFileReferences(validation.manifest, repoTree);
+    if (fileValidation.errors.length > 0) {
+      pack.status = "invalid";
+      pack.validationErrors = fileValidation.errors;
+      pack.warnings = fileValidation.warnings.length > 0 ? fileValidation.warnings : undefined;
+      pack.indexedAt = new Date().toISOString();
+      await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
+      return;
+    }
+    fileWarnings = fileValidation.warnings;
   }
 
   pack.displayName = validation.packData.displayName;
@@ -219,6 +270,8 @@ export async function reindexSinglePack(
   pack.author = validation.packData.author;
   pack.components = validation.packData.components;
   pack.keywords = validation.packData.keywords;
+  pack.warnings = fileWarnings.length > 0 ? fileWarnings : undefined;
+  pack.validationErrors = undefined;
   pack.status = "active";
   pack.indexedAt = new Date().toISOString();
 
