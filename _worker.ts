@@ -1,7 +1,7 @@
 import type { Env, PackEntry } from "./src/types.js";
 import { EMPTY_COMPONENT_COUNTS } from "./src/types.js";
 import { injectPackOgTags } from "./src/lib/og.js";
-import { handleListPacks, handleGetPack, jsonResponse } from "./src/api/packs.js";
+import { handleListPacks, handleGetPack, handleUpdatePackStatus, jsonResponse } from "./src/api/packs.js";
 import { handleSubmit } from "./src/api/submit.js";
 import { handleReindex } from "./src/api/reindex.js";
 import {
@@ -110,6 +110,15 @@ async function handleApiRoute(
       console.error(`[reindex] Fatal error: ${message}`);
       return jsonResponse({ error: "Reindex failed", message }, 500);
     }
+  }
+
+  // POST /api/packs/update-status (used by GitHub Actions validation workflow)
+  if (path === "/api/packs/update-status" && request.method === "POST") {
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader || authHeader !== `Bearer ${env.REINDEX_SECRET}`) {
+      return jsonResponse({ error: "Unauthorized" }, 401);
+    }
+    return handleUpdatePackStatus(request, env);
   }
 
   return jsonResponse({ error: "Not found" }, 404);

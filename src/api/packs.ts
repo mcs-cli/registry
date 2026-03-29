@@ -123,6 +123,64 @@ function computeSearchScore(pack: PackEntry, query: string): number {
   return score;
 }
 
+export interface UpdatePackStatusRequest {
+  slug: string;
+  status?: "active" | "invalid" | "unavailable";
+  warnings?: string[];
+  validationErrors?: string[];
+}
+
+export async function handleUpdatePackStatus(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  let body: UpdatePackStatusRequest;
+  try {
+    body = (await request.json()) as UpdatePackStatusRequest;
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (!body.slug || typeof body.slug !== "string") {
+    return jsonResponse({ error: "slug is required" }, 400);
+  }
+
+  const VALID_STATUSES = ["active", "invalid", "unavailable"] as const;
+  if (body.status && !VALID_STATUSES.includes(body.status)) {
+    return jsonResponse({ error: `Invalid status '${body.status}'. Must be one of: ${VALID_STATUSES.join(", ")}` }, 400);
+  }
+
+  const raw = await env.PACKS.get(`pack:${body.slug}`);
+  if (!raw) {
+    return jsonResponse({ error: `Pack '${body.slug}' not found` }, 404);
+  }
+
+  const pack = JSON.parse(raw) as PackEntry;
+
+  if (body.status) pack.status = body.status;
+  if (body.warnings !== undefined) pack.warnings = body.warnings.length > 0 ? body.warnings : undefined;
+  if (body.validationErrors !== undefined) pack.validationErrors = body.validationErrors.length > 0 ? body.validationErrors : undefined;
+  pack.indexedAt = new Date().toISOString();
+
+  await env.PACKS.put(`pack:${pack.slug}`, JSON.stringify(pack));
+
+  // Update index: add if active, remove if not
+  const indexRaw = await env.PACKS.get("index:all");
+  const slugs: string[] = indexRaw ? JSON.parse(indexRaw) : [];
+  const inIndex = slugs.includes(pack.slug);
+
+  if (pack.status === "active" && !inIndex) {
+    slugs.push(pack.slug);
+    slugs.sort();
+    await env.PACKS.put("index:all", JSON.stringify(slugs));
+  } else if (pack.status !== "active" && inIndex) {
+    const filtered = slugs.filter((s) => s !== pack.slug);
+    await env.PACKS.put("index:all", JSON.stringify(filtered));
+  }
+
+  return jsonResponse({ success: true, pack });
+}
+
 export function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,

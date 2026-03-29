@@ -1,0 +1,33 @@
+name: Deep Validation
+
+on:
+  schedule:
+    - cron: "30 4 * * *" # Daily at 04:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run deep validation
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
+          REINDEX_SECRET: ${{ secrets.REINDEX_SECRET }}
+        run: npx tsx scripts/validate.ts
