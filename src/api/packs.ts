@@ -145,6 +145,11 @@ export async function handleUpdatePackStatus(
     return jsonResponse({ error: "slug is required" }, 400);
   }
 
+  const VALID_STATUSES = ["active", "invalid", "unavailable"] as const;
+  if (body.status && !VALID_STATUSES.includes(body.status)) {
+    return jsonResponse({ error: `Invalid status '${body.status}'. Must be one of: ${VALID_STATUSES.join(", ")}` }, 400);
+  }
+
   const raw = await env.PACKS.get(`pack:${body.slug}`);
   if (!raw) {
     return jsonResponse({ error: `Pack '${body.slug}' not found` }, 404);

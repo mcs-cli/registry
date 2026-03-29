@@ -22,6 +22,10 @@ if (!GITHUB_TOKEN) {
   process.exit(1);
 }
 
+if (!REINDEX_SECRET) {
+  console.warn("WARNING: REINDEX_SECRET not set — running in dry-run mode (no status updates will be written)");
+}
+
 const GH_HEADERS: Record<string, string> = {
   Authorization: `Bearer ${GITHUB_TOKEN}`,
   Accept: "application/vnd.github+json",
@@ -52,9 +56,24 @@ interface ValidationReport {
 
 // -- GitHub API --
 
+class RateLimitError extends Error {
+  constructor(status: number, endpoint: string) {
+    super(`GitHub API rate limited (HTTP ${status}) at ${endpoint}`);
+  }
+}
+
+function checkRateLimit(res: Response, endpoint: string): void {
+  if (res.status === 403 || res.status === 429) {
+    throw new RateLimitError(res.status, endpoint);
+  }
+}
+
 async function fetchDefaultBranch(owner: string, repo: string): Promise<string | null> {
   const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers: GH_HEADERS });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    checkRateLimit(res, `repos/${owner}/${repo}`);
+    return null;
+  }
   const data = (await res.json()) as { default_branch: string };
   return data.default_branch;
 }
@@ -64,7 +83,10 @@ async function fetchTechpackYaml(owner: string, repo: string, branch: string): P
     `https://api.github.com/repos/${owner}/${repo}/contents/techpack.yaml?ref=${branch}`,
     { headers: { ...GH_HEADERS, Accept: "application/vnd.github.v3.raw" } }
   );
-  if (!res.ok) return null;
+  if (!res.ok) {
+    checkRateLimit(res, `repos/${owner}/${repo}/contents`);
+    return null;
+  }
   return res.text();
 }
 
@@ -73,9 +95,15 @@ async function fetchRepoTree(owner: string, repo: string, branch: string): Promi
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
     { headers: GH_HEADERS }
   );
-  if (!res.ok) return null;
+  if (!res.ok) {
+    checkRateLimit(res, `repos/${owner}/${repo}/git/trees`);
+    return null;
+  }
   const json = (await res.json()) as { tree: Array<{ path: string; type: string }>; truncated: boolean };
-  if (json.truncated) return null;
+  if (json.truncated) {
+    console.warn(`  Tree truncated for ${owner}/${repo} — repo too large for full enumeration`);
+    return null;
+  }
   const files = new Set<string>();
   const directories = new Set<string>();
   for (const entry of json.tree) {
@@ -189,7 +217,12 @@ async function updatePackStatus(
     },
     body: JSON.stringify({ slug, status, warnings, validationErrors }),
   });
-  return res.ok;
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error(`  Failed to update ${slug}: HTTP ${res.status}${body ? ` — ${body}` : ""}`);
+    return false;
+  }
+  return true;
 }
 
 // -- Issue filing (on the registry repo) --
@@ -201,7 +234,10 @@ async function hasOpenIssue(slug: string): Promise<boolean> {
   const res = await fetch(`https://api.github.com/search/issues?q=${query}&per_page=1`, {
     headers: GH_HEADERS,
   });
-  if (!res.ok) return false;
+  if (!res.ok) {
+    console.warn(`  Warning: issue search failed for ${slug} (HTTP ${res.status}) — skipping to avoid duplicates`);
+    return true;
+  }
   const data = (await res.json()) as { total_count: number };
   return data.total_count > 0;
 }
@@ -217,10 +253,13 @@ async function createGitHubIssue(title: string, body: string, labels?: string[])
   });
 
   if (!res.ok) {
+    const errorBody = await res.text().catch(() => "");
     // 422 can mean the label doesn't exist yet — retry without labels
     if (res.status === 422 && labels) {
+      console.warn(`  Issue creation got 422, retrying without labels`);
       return createGitHubIssue(title, body);
     }
+    console.error(`  Failed to create issue: HTTP ${res.status}${errorBody ? ` — ${errorBody}` : ""}`);
     return null;
   }
   const data = (await res.json()) as { html_url: string };
@@ -383,7 +422,25 @@ async function main() {
 
   for (const pack of packs) {
     process.stdout.write(`  ${pack.slug} ... `);
-    const report = await validatePack(pack);
+    let report: ValidationReport;
+    try {
+      report = await validatePack(pack);
+    } catch (err) {
+      // Rate limit errors abort the entire run to prevent mass-invalidation
+      if (err instanceof RateLimitError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(`CRASH: ${message}`);
+      report = {
+        slug: pack.slug,
+        displayName: pack.displayName,
+        previousStatus: pack.status,
+        newStatus: "invalid",
+        errors: [`Validation crashed: ${message}`],
+        warnings: [],
+        heuristics: [],
+        statusChanged: false,
+      };
+    }
     reports.push(report);
 
     const icon = report.newStatus === "active" ? "✅" : "❌";
@@ -392,13 +449,12 @@ async function main() {
     if (report.heuristics.length > 0) extras.push(`${report.heuristics.length} hints`);
     console.log(`${icon} ${report.newStatus}${extras.length > 0 ? ` (${extras.join(", ")})` : ""}`);
 
-    // Update status if changed
-    const statusChanged = report.newStatus !== pack.status;
+    // Detect actual status transition vs. data-only drift
+    report.statusChanged = report.newStatus !== pack.status;
     const warningsChanged = JSON.stringify(report.warnings) !== JSON.stringify(pack.warnings ?? []);
     const errorsChanged = JSON.stringify(report.errors) !== JSON.stringify(pack.validationErrors ?? []);
 
-    if (statusChanged || warningsChanged || errorsChanged) {
-      report.statusChanged = true;
+    if (report.statusChanged || warningsChanged || errorsChanged) {
       // Merge heuristic hints into warnings for storage
       const allWarnings = [...report.warnings, ...report.heuristics];
       const updated = await updatePackStatus(report.slug, report.newStatus, allWarnings, report.errors);
