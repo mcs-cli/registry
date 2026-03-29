@@ -15,10 +15,8 @@ const HEADERS: Record<string, string> = {
 
 const REGISTRY_API = "https://techpacks.mcs-cli.dev/api/packs";
 
-// Extra packs to test (not in the registry)
-const EXTRA_PACKS = [
-  "https://github.com/mshadmanrahman/morning-digest",
-];
+// Extra packs to test (not in the registry — add URLs here for manual testing)
+const EXTRA_PACKS: string[] = [];
 
 // -- GitHub API helpers --
 
