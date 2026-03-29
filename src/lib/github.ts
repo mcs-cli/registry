@@ -1,4 +1,4 @@
-import type { RepoMetadata } from "../types.js";
+import type { RepoMetadata, RepoTree } from "../types.js";
 
 const GRAPHQL_ENDPOINT = "https://api.github.com/graphql";
 
@@ -127,6 +127,49 @@ export async function fetchTechpackYaml(
   return response.text();
 }
 
+export async function fetchRepoTree(
+  owner: string,
+  repo: string,
+  branch: string,
+  token: string
+): Promise<RepoTree | null> {
+  const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: "application/json",
+      "User-Agent": "mcs-registry",
+    },
+  });
+
+  if (!response.ok) {
+    console.log(`[github] Tree fetch failed for ${owner}/${repo}@${branch}: HTTP ${response.status}`);
+    return null;
+  }
+
+  const json = (await response.json()) as GitTreeResponse;
+
+  if (json.truncated) {
+    console.log(
+      `[github] Tree for ${owner}/${repo} was truncated (${json.tree.length} entries) — skipping file validation`
+    );
+    return null;
+  }
+
+  const files = new Set<string>();
+  const directories = new Set<string>();
+
+  for (const entry of json.tree) {
+    if (entry.type === "blob") {
+      files.add(entry.path);
+    } else if (entry.type === "tree") {
+      directories.add(entry.path);
+    }
+  }
+
+  return { files, directories };
+}
+
 // -- Internal types --
 
 interface RawRepoData {
@@ -134,6 +177,13 @@ interface RawRepoData {
   stargazerCount: number;
   pushedAt: string;
   refs: { nodes: Array<{ name: string }> };
+}
+
+interface GitTreeResponse {
+  sha: string;
+  url: string;
+  tree: Array<{ path: string; mode: string; type: string; sha: string; size?: number }>;
+  truncated: boolean;
 }
 
 interface GraphQLResponse<T> {

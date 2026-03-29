@@ -1,7 +1,7 @@
 import type { Env, PackEntry, SubmitRequest } from "../types.js";
-import { fetchRepoMetadata, fetchTechpackYaml, parseGitHubUrl } from "../lib/github.js";
+import { fetchRepoMetadata, fetchRepoTree, fetchTechpackYaml, parseGitHubUrl } from "../lib/github.js";
 import { verifyTurnstile } from "../lib/turnstile.js";
-import { validateTechpackYaml } from "../lib/validator.js";
+import { validateTechpackYaml, validateFileReferences } from "../lib/validator.js";
 import { jsonResponse } from "./packs.js";
 
 const MAX_SUBMISSIONS_PER_HOUR = 5;
@@ -96,13 +96,12 @@ export async function handleSubmit(
     );
   }
 
-  // Fetch techpack.yaml
-  const yamlContent = await fetchTechpackYaml(
-    metadata.owner,
-    metadata.repo,
-    metadata.defaultBranch,
-    env.GITHUB_TOKEN
-  );
+  // Fetch techpack.yaml and repo tree in parallel (independent calls, saves a round-trip)
+  const [yamlContent, repoTree] = await Promise.all([
+    fetchTechpackYaml(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
+    fetchRepoTree(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
+  ]);
+
   if (!yamlContent) {
     return jsonResponse(
       { error: "No techpack.yaml found at the repository root. This file is required for MCS tech packs." },
@@ -122,6 +121,23 @@ export async function handleSubmit(
     );
   }
 
+  // File-existence validation
+  let fileWarnings: string[] = [];
+  if (repoTree && validation.manifest) {
+    const fileValidation = validateFileReferences(validation.manifest, repoTree);
+    if (fileValidation.errors.length > 0) {
+      return jsonResponse(
+        {
+          error: "techpack.yaml references files that don't exist in the repository.",
+          details: fileValidation.errors,
+          warnings: fileValidation.warnings,
+        },
+        422
+      );
+    }
+    fileWarnings = fileValidation.warnings;
+  }
+
   // Build pack entry
   const pack: PackEntry = {
     slug,
@@ -138,6 +154,7 @@ export async function handleSubmit(
     keywords: validation.packData.keywords,
     status: "active",
     indexedAt: new Date().toISOString(),
+    warnings: fileWarnings.length > 0 ? fileWarnings : undefined,
   };
 
   // Store in KV

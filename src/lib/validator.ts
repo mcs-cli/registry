@@ -1,5 +1,5 @@
 import * as yaml from "js-yaml";
-import type { ExtractedPackData, ComponentCounts, ValidationResult } from "../types.js";
+import type { ExtractedPackData, ComponentCounts, ValidationResult, RepoTree } from "../types.js";
 import schema from "../../schema/techpack-schema.json";
 
 // Derive validation constants from the JSON schema (single source of truth)
@@ -72,11 +72,12 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
     return {
       valid: false,
       errors: [`YAML parse error: ${e instanceof Error ? e.message : String(e)}`],
+      warnings: [],
     };
   }
 
   if (!parsed || typeof parsed !== "object") {
-    return { valid: false, errors: ["techpack.yaml must be a YAML object"] };
+    return { valid: false, errors: ["techpack.yaml must be a YAML object"], warnings: [] };
   }
 
   const manifest = parsed as Record<string, unknown>;
@@ -154,12 +155,96 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
   }
 
   if (errors.length > 0) {
-    return { valid: false, errors };
+    return { valid: false, errors, warnings: [] };
   }
 
   // Step 4: Extract pack data for indexing
   const packData = extractPackData(manifest, components);
-  return { valid: true, errors: [], packData };
+  return { valid: true, errors: [], warnings: [], packData, manifest };
+}
+
+export function validateFileReferences(
+  manifest: Record<string, unknown>,
+  repoTree: RepoTree
+): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  const pathsToCheck: Array<{ path: string; label: string }> = [];
+
+  // Extract source paths from components
+  const components = (manifest.components ?? []) as Array<Record<string, unknown>>;
+  for (const comp of components) {
+    const id = (comp.id as string) ?? "unknown";
+
+    // Shorthand: hook, command, skill, agent (copyFileShorthand objects)
+    for (const key of ["hook", "command", "skill", "agent"] as const) {
+      const shorthand = comp[key] as Record<string, unknown> | undefined;
+      if (shorthand && typeof shorthand === "object" && typeof shorthand.source === "string") {
+        pathsToCheck.push({ path: shorthand.source, label: `Component '${id}' ${key} source` });
+      }
+    }
+
+    // Shorthand: settingsFile (plain string)
+    if (typeof comp.settingsFile === "string") {
+      pathsToCheck.push({ path: comp.settingsFile, label: `Component '${id}' settingsFile` });
+    }
+
+    // Verbose: installAction with source field
+    const action = comp.installAction as Record<string, unknown> | undefined;
+    if (action && typeof action === "object" && typeof action.source === "string") {
+      pathsToCheck.push({ path: action.source, label: `Component '${id}' installAction source` });
+    }
+  }
+
+  // Extract contentFile from templates
+  const templates = (manifest.templates ?? []) as Array<Record<string, unknown>>;
+  for (const template of templates) {
+    if (typeof template.contentFile === "string") {
+      const sectionId = (template.sectionIdentifier as string) ?? "unknown";
+      pathsToCheck.push({ path: template.contentFile, label: `Template '${sectionId}' contentFile` });
+    }
+  }
+
+  // Extract configureProject.script
+  const configureProject = manifest.configureProject as Record<string, unknown> | undefined;
+  if (configureProject && typeof configureProject === "object" && typeof configureProject.script === "string") {
+    pathsToCheck.push({ path: configureProject.script, label: "configureProject script" });
+  }
+
+  // Validate each path
+  for (const { path: rawPath, label } of pathsToCheck) {
+    const normalized = rawPath.replace(/^\.\//, "").trim();
+
+    // source: "." or "./" — repo root, always exists but almost always wrong
+    if (normalized === "" || normalized === ".") {
+      warnings.push(
+        `${label} '${rawPath}' points to the repository root — this will copy unintended files (LICENSE, README.md, techpack.yaml)`
+      );
+      continue;
+    }
+
+    const inFiles = repoTree.files.has(normalized);
+    const inDirs = repoTree.directories.has(normalized);
+
+    if (!inFiles && !inDirs) {
+      errors.push(`${label} '${normalized}' not found in repository`);
+      continue;
+    }
+
+    // Warn if a directory source contains repo boilerplate
+    if (inDirs) {
+      const boilerplate = ["techpack.yaml", "LICENSE", "README.md"];
+      const found = boilerplate.filter((f) => repoTree.files.has(`${normalized}/${f}`));
+      if (found.length > 0) {
+        warnings.push(
+          `${label} directory '${normalized}' contains ${found.join(", ")} — may be copying unintended files`
+        );
+      }
+    }
+  }
+
+  return { errors, warnings };
 }
 
 function validateStructure(manifest: Record<string, unknown>, errors: string[]): void {

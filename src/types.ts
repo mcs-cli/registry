@@ -13,6 +13,8 @@ export interface PackEntry {
   keywords: string[];
   status: PackStatus;
   indexedAt: string;
+  warnings?: string[];
+  validationErrors?: string[];
 }
 
 export type PackStatus = "active" | "unavailable" | "invalid";
@@ -29,6 +31,11 @@ export interface ComponentCounts {
   templates: number;
 }
 
+export const EMPTY_COMPONENT_COUNTS: Readonly<ComponentCounts> = Object.freeze({
+  mcpServers: 0, hooks: 0, skills: 0, commands: 0, agents: 0,
+  brewPackages: 0, plugins: 0, configurations: 0, templates: 0,
+});
+
 export interface RepoMetadata {
   owner: string;
   repo: string;
@@ -41,7 +48,14 @@ export interface RepoMetadata {
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
+  warnings: string[];
   packData?: ExtractedPackData;
+  manifest?: Record<string, unknown>;
+}
+
+export interface RepoTree {
+  files: Set<string>;
+  directories: Set<string>;
 }
 
 export interface ExtractedPackData {

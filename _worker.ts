@@ -1,4 +1,5 @@
 import type { Env, PackEntry } from "./src/types.js";
+import { EMPTY_COMPONENT_COUNTS } from "./src/types.js";
 import { injectPackOgTags } from "./src/lib/og.js";
 import { handleListPacks, handleGetPack, jsonResponse } from "./src/api/packs.js";
 import { handleSubmit } from "./src/api/submit.js";
@@ -9,6 +10,7 @@ import {
   parseGitHubUrl,
 } from "./src/lib/github.js";
 import { validateTechpackYaml } from "./src/lib/validator.js";
+import { validatePackFiles } from "./src/lib/file-validation.js";
 
 export default {
   async fetch(
@@ -140,28 +142,63 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
     if (!yamlContent) continue;
 
     const validation = validateTechpackYaml(yamlContent);
-    if (!validation.valid || !validation.packData) continue;
-
     const slug = `github/${parsed.owner}/${parsed.repo}`;
-    const pack = {
+    const canonicalUrl = `https://github.com/${parsed.owner}/${parsed.repo}`;
+
+    if (!validation.valid || !validation.packData) {
+      // Store as invalid instead of silently skipping
+      const invalidPack: PackEntry = {
+        slug,
+        identifier: "",
+        displayName: "",
+        description: "",
+        author: null,
+        repoUrl: canonicalUrl,
+        defaultBranch: metadata.defaultBranch,
+        latestTag: metadata.latestTag,
+        stargazerCount: metadata.stargazerCount,
+        pushedAt: metadata.pushedAt,
+        components: EMPTY_COMPONENT_COUNTS,
+        keywords: [],
+        status: "invalid",
+        indexedAt: new Date().toISOString(),
+        validationErrors: validation.errors,
+      };
+      await env.PACKS.put(`pack:${slug}`, JSON.stringify(invalidPack));
+      continue;
+    }
+
+    // File-existence validation
+    const fileValidation = await validatePackFiles(
+      parsed.owner, parsed.repo, metadata.defaultBranch, env.GITHUB_TOKEN, validation.manifest
+    );
+    const fileErrors = fileValidation?.errors.length ? fileValidation.errors : undefined;
+    const fileWarnings = fileValidation?.warnings.length ? fileValidation.warnings : undefined;
+
+    const isActive = !fileErrors;
+    const pack: PackEntry = {
       slug,
       identifier: validation.packData.identifier,
       displayName: validation.packData.displayName,
       description: validation.packData.description,
       author: validation.packData.author,
-      repoUrl: `https://github.com/${parsed.owner}/${parsed.repo}`,
+      repoUrl: canonicalUrl,
       defaultBranch: metadata.defaultBranch,
       latestTag: metadata.latestTag,
       stargazerCount: metadata.stargazerCount,
       pushedAt: metadata.pushedAt,
       components: validation.packData.components,
       keywords: validation.packData.keywords,
-      status: "active" as const,
+      status: isActive ? "active" : "invalid",
       indexedAt: new Date().toISOString(),
+      warnings: fileWarnings,
+      validationErrors: fileErrors,
     };
 
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-    slugs.push(slug);
+    if (isActive) {
+      slugs.push(slug);
+    }
   }
 
   // Merge with existing index
