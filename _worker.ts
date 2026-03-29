@@ -1,15 +1,16 @@
 import type { Env, PackEntry } from "./src/types.js";
+import { EMPTY_COMPONENT_COUNTS } from "./src/types.js";
 import { injectPackOgTags } from "./src/lib/og.js";
 import { handleListPacks, handleGetPack, jsonResponse } from "./src/api/packs.js";
 import { handleSubmit } from "./src/api/submit.js";
 import { handleReindex } from "./src/api/reindex.js";
 import {
   fetchRepoMetadata,
-  fetchRepoTree,
   fetchTechpackYaml,
   parseGitHubUrl,
 } from "./src/lib/github.js";
-import { validateTechpackYaml, validateFileReferences } from "./src/lib/validator.js";
+import { validateTechpackYaml } from "./src/lib/validator.js";
+import { validatePackFiles } from "./src/lib/file-validation.js";
 
 export default {
   async fetch(
@@ -157,7 +158,7 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
         latestTag: metadata.latestTag,
         stargazerCount: metadata.stargazerCount,
         pushedAt: metadata.pushedAt,
-        components: { mcpServers: 0, hooks: 0, skills: 0, commands: 0, agents: 0, brewPackages: 0, plugins: 0, configurations: 0, templates: 0 },
+        components: EMPTY_COMPONENT_COUNTS,
         keywords: [],
         status: "invalid",
         indexedAt: new Date().toISOString(),
@@ -169,24 +170,11 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
     }
 
     // File-existence validation
-    const repoTree = await fetchRepoTree(
-      parsed.owner,
-      parsed.repo,
-      metadata.defaultBranch,
-      env.GITHUB_TOKEN
+    const fileValidation = await validatePackFiles(
+      parsed.owner, parsed.repo, metadata.defaultBranch, env.GITHUB_TOKEN, validation.manifest
     );
-
-    let fileWarnings: string[] | undefined;
-    let fileErrors: string[] | undefined;
-    if (repoTree && validation.manifest) {
-      const fileValidation = validateFileReferences(validation.manifest, repoTree);
-      if (fileValidation.errors.length > 0) {
-        fileErrors = fileValidation.errors;
-      }
-      if (fileValidation.warnings.length > 0) {
-        fileWarnings = fileValidation.warnings;
-      }
-    }
+    const fileErrors = fileValidation?.errors.length ? fileValidation.errors : undefined;
+    const fileWarnings = fileValidation?.warnings.length ? fileValidation.warnings : undefined;
 
     const pack: PackEntry = {
       slug,

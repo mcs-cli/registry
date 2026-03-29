@@ -31,6 +31,11 @@ export interface ComponentCounts {
   templates: number;
 }
 
+export const EMPTY_COMPONENT_COUNTS: ComponentCounts = {
+  mcpServers: 0, hooks: 0, skills: 0, commands: 0, agents: 0,
+  brewPackages: 0, plugins: 0, configurations: 0, templates: 0,
+};
+
 export interface RepoMetadata {
   owner: string;
   repo: string;

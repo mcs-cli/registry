@@ -96,13 +96,12 @@ export async function handleSubmit(
     );
   }
 
-  // Fetch techpack.yaml
-  const yamlContent = await fetchTechpackYaml(
-    metadata.owner,
-    metadata.repo,
-    metadata.defaultBranch,
-    env.GITHUB_TOKEN
-  );
+  // Fetch techpack.yaml and repo tree in parallel (independent calls, saves a round-trip)
+  const [yamlContent, repoTree] = await Promise.all([
+    fetchTechpackYaml(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
+    fetchRepoTree(parsed.owner, parsed.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
+  ]);
+
   if (!yamlContent) {
     return jsonResponse(
       { error: "No techpack.yaml found at the repository root. This file is required for MCS tech packs." },
@@ -124,13 +123,6 @@ export async function handleSubmit(
 
   // File-existence validation
   let fileWarnings: string[] = [];
-  const repoTree = await fetchRepoTree(
-    parsed.owner,
-    parsed.repo,
-    metadata.defaultBranch,
-    env.GITHUB_TOKEN
-  );
-
   if (repoTree && validation.manifest) {
     const fileValidation = validateFileReferences(validation.manifest, repoTree);
     if (fileValidation.errors.length > 0) {
