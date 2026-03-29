@@ -165,7 +165,6 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
         validationErrors: validation.errors,
       };
       await env.PACKS.put(`pack:${slug}`, JSON.stringify(invalidPack));
-      slugs.push(slug);
       continue;
     }
 
@@ -176,6 +175,7 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
     const fileErrors = fileValidation?.errors.length ? fileValidation.errors : undefined;
     const fileWarnings = fileValidation?.warnings.length ? fileValidation.warnings : undefined;
 
+    const isActive = !fileErrors;
     const pack: PackEntry = {
       slug,
       identifier: validation.packData.identifier,
@@ -189,14 +189,16 @@ async function seedFromTechpacksJson(env: Env): Promise<void> {
       pushedAt: metadata.pushedAt,
       components: validation.packData.components,
       keywords: validation.packData.keywords,
-      status: fileErrors ? "invalid" : "active",
+      status: isActive ? "active" : "invalid",
       indexedAt: new Date().toISOString(),
       warnings: fileWarnings,
       validationErrors: fileErrors,
     };
 
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-    slugs.push(slug);
+    if (isActive) {
+      slugs.push(slug);
+    }
   }
 
   // Merge with existing index

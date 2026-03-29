@@ -20,7 +20,10 @@ export async function validatePackFiles(
   if (!manifest) return null;
 
   const repoTree = await fetchRepoTree(owner, repo, branch, token);
-  if (!repoTree) return null;
+  if (!repoTree) {
+    console.log(`[file-validation] Skipped for ${owner}/${repo}: tree fetch failed`);
+    return null;
+  }
 
   return validateFileReferences(manifest, repoTree);
 }

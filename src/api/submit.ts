@@ -99,7 +99,7 @@ export async function handleSubmit(
   // Fetch techpack.yaml and repo tree in parallel (independent calls, saves a round-trip)
   const [yamlContent, repoTree] = await Promise.all([
     fetchTechpackYaml(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
-    fetchRepoTree(parsed.owner, parsed.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
+    fetchRepoTree(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
   ]);
 
   if (!yamlContent) {

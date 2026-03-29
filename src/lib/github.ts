@@ -142,14 +142,18 @@ export async function fetchRepoTree(
     },
   });
 
-  if (!response.ok) return null;
+  if (!response.ok) {
+    console.log(`[github] Tree fetch failed for ${owner}/${repo}@${branch}: HTTP ${response.status}`);
+    return null;
+  }
 
   const json = (await response.json()) as GitTreeResponse;
 
   if (json.truncated) {
     console.log(
-      `[github] Tree for ${owner}/${repo} was truncated (${json.tree.length} entries)`
+      `[github] Tree for ${owner}/${repo} was truncated (${json.tree.length} entries) — skipping file validation`
     );
+    return null;
   }
 
   const files = new Set<string>();
