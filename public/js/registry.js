@@ -41,6 +41,9 @@ document.addEventListener('DOMContentLoaded', () => {
     requestAnimationFrame(tick);
   }
 
+  // -- Constants --
+  const warningSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="var(--amber)"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>';
+
   // -- State --
   let currentSort = 'stars';
   let debounceTimer = null;
@@ -87,13 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // -- Submit form --
-  submitForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const repoUrl = document.getElementById('repo-url').value.trim();
-    const honeypot = document.getElementById('website').value;
-
-    if (!repoUrl) return;
-
+  async function submitPack(repoUrl, honeypot, confirmWarnings) {
     // Get Turnstile token
     const turnstileToken = typeof turnstile !== 'undefined'
       ? turnstile.getResponse()
@@ -105,21 +102,38 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Submitting...';
+    submitBtn.textContent = confirmWarnings ? 'Submitting...' : 'Validating...';
 
     try {
+      const payload = { repoUrl, turnstileToken, honeypot };
+      if (confirmWarnings) payload.confirmWarnings = true;
+
       const response = await fetch('/api/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repoUrl, turnstileToken, honeypot }),
+        body: JSON.stringify(payload),
       });
 
       const data = await response.json();
 
+      if (data.requiresConfirmation) {
+        let html = '<strong>This pack has validation warnings:</strong>';
+        html += '<ul>' + data.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('') + '</ul>';
+        html += '<p style="font-size:.78rem;color:var(--text-secondary);margin:.75rem 0 .5rem">These are non-fatal issues. The pack will still work, but you may want to fix them.</p>';
+        html += '<button class="btn-primary submit-btn" id="confirm-warnings-btn" style="margin-top:.5rem;font-size:.85rem">Submit Anyway</button>';
+        showResult('warning', html);
+
+        document.getElementById('confirm-warnings-btn').addEventListener('click', () => {
+          submitPack(repoUrl, honeypot, true);
+        });
+        return;
+      }
+
       if (response.ok && data.success) {
-        showResult('success', `Pack <strong>${escapeHtml(data.pack.displayName)}</strong> added to the registry!`);
+        const warningNote = data.pack.warnings && data.pack.warnings.length > 0
+          ? ' (with warnings)' : '';
+        showResult('success', `Pack <strong>${escapeHtml(data.pack.displayName)}</strong> added to the registry!${warningNote}`);
         document.getElementById('repo-url').value = '';
-        // Reload packs to update count and show the new pack
         loadPacks(searchInput.value.trim(), currentSort);
       } else {
         let msg = escapeHtml(data.error || 'Submission failed.');
@@ -137,6 +151,14 @@ document.addEventListener('DOMContentLoaded', () => {
         turnstile.reset();
       }
     }
+  }
+
+  submitForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const repoUrl = document.getElementById('repo-url').value.trim();
+    const honeypot = document.getElementById('website').value;
+    if (!repoUrl) return;
+    submitPack(repoUrl, honeypot, false);
   });
 
   // -- Functions --
@@ -292,6 +314,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const banner = renderBanner(pack.status);
     const ownerRepo = pack.repoUrl.replace('https://github.com/', '');
     const installCmd = `mcs pack add ${ownerRepo}`;
+    const warningIcon = (pack.warnings && pack.warnings.length > 0 && pack.status === 'active')
+      ? `<span class="pack-card-warning" title="${pack.warnings.length} warning${pack.warnings.length > 1 ? 's' : ''}">${warningSvg}</span>`
+      : '';
 
     return `
       <div class="pack-card" data-id="${escapeHtml(pack.slug)}" data-repo="${escapeHtml(pack.repoUrl)}" role="button" tabindex="0">
@@ -300,6 +325,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <div class="pack-card-header">
             <span class="pack-dot pack-dot--${dotColor}"></span>
             <span class="pack-card-name">${escapeHtml(pack.displayName)}</span>
+            ${warningIcon}
             ${pack.stargazerCount ? `<span class="star-count">
               <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
               ${pack.stargazerCount}
@@ -517,6 +543,30 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>`
       : '';
 
+    const warningsHtml = (pack.warnings && pack.warnings.length > 0)
+      ? `<div class="pack-modal-notice pack-modal-notice--warning">
+          <div class="pack-modal-notice-header">
+            ${warningSvg}
+            <span>${pack.warnings.length} warning${pack.warnings.length > 1 ? 's' : ''}</span>
+          </div>
+          <ul class="pack-modal-notice-list">
+            ${pack.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}
+          </ul>
+        </div>`
+      : '';
+
+    const errorsHtml = (pack.validationErrors && pack.validationErrors.length > 0)
+      ? `<div class="pack-modal-notice pack-modal-notice--error">
+          <div class="pack-modal-notice-header">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <span>${pack.validationErrors.length} validation error${pack.validationErrors.length > 1 ? 's' : ''}</span>
+          </div>
+          <ul class="pack-modal-notice-list">
+            ${pack.validationErrors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}
+          </ul>
+        </div>`
+      : '';
+
     return `
       <div class="pack-modal-header">
         <span class="pack-dot pack-dot--${dotColor}"></span>
@@ -526,6 +576,8 @@ document.addEventListener('DOMContentLoaded', () => {
         </button>
       </div>
       ${banner}
+      ${warningsHtml}
+      ${errorsHtml}
       <p class="pack-modal-desc">${escapeHtml(pack.description)}</p>
       <div class="pack-modal-meta">
         ${pack.author ? `<span class="pack-modal-meta-item">by <span style="color:var(--${dotColor})">${escapeHtml(pack.author)}</span></span>` : ''}

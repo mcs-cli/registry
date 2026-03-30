@@ -138,6 +138,15 @@ export async function handleSubmit(
     fileWarnings = fileValidation.warnings;
   }
 
+  // If there are warnings and the user hasn't confirmed, ask for confirmation
+  const allWarnings = [...validation.warnings, ...fileWarnings];
+  if (allWarnings.length > 0 && !body.confirmWarnings) {
+    return jsonResponse({
+      requiresConfirmation: true,
+      warnings: allWarnings,
+    }, 200);
+  }
+
   // Build pack entry
   const pack: PackEntry = {
     slug,
@@ -154,7 +163,7 @@ export async function handleSubmit(
     keywords: validation.packData.keywords,
     status: "active",
     indexedAt: new Date().toISOString(),
-    warnings: fileWarnings.length > 0 ? fileWarnings : undefined,
+    warnings: allWarnings.length > 0 ? allWarnings : undefined,
   };
 
   // Store in KV

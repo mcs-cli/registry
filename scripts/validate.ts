@@ -10,6 +10,7 @@
  *   REINDEX_SECRET        — Auth token for the update-status endpoint
  */
 import { validateTechpackYaml, validateFileReferences } from "../src/lib/validator.js";
+import { parseGitHubUrl } from "../src/lib/github.js";
 import type { RepoTree } from "../src/types.js";
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN ?? "";
@@ -39,8 +40,10 @@ interface PackInfo {
   repoUrl: string;
   displayName: string;
   status: string;
+  pushedAt: string;
   warnings?: string[];
   validationErrors?: string[];
+  deepValidatedAt?: string;
 }
 
 interface ValidationReport {
@@ -150,13 +153,13 @@ function runHeuristics(
 
   // Heuristic 1: Files in well-known directories that are not referenced
   const wellKnownDirs = ["hooks", "skills", "commands", "agents", "templates"];
+  const referencedPathsArray = [...referencedPaths];
   for (const dir of wellKnownDirs) {
     if (!tree.directories.has(dir)) continue;
     for (const file of tree.files) {
       if (!file.startsWith(`${dir}/`)) continue;
-      // Check if this file or its parent directory is referenced
       const isReferenced = referencedPaths.has(file) ||
-        [...referencedPaths].some((p) => file.startsWith(`${p}/`));
+        referencedPathsArray.some((p) => file.startsWith(`${p}/`));
       if (!isReferenced) {
         hints.push(`Unreferenced file '${file}' in ${dir}/ directory — may be unwired content`);
       }
@@ -190,6 +193,22 @@ function runHeuristics(
   return hints;
 }
 
+// -- Skip logic --
+
+const FORCE_ALL = process.env.FORCE_ALL === "true";
+
+function canSkipValidation(pack: PackInfo): boolean {
+  if (FORCE_ALL) return false;
+  // Always validate packs with existing warnings or errors
+  if ((pack.warnings?.length ?? 0) > 0) return false;
+  if ((pack.validationErrors?.length ?? 0) > 0) return false;
+  // Always validate non-active packs (might have been fixed)
+  if (pack.status !== "active") return false;
+  // Skip if pack hasn't been pushed since last deep validation
+  if (!pack.deepValidatedAt || !pack.pushedAt) return false;
+  return new Date(pack.pushedAt).getTime() <= new Date(pack.deepValidatedAt).getTime();
+}
+
 // -- Registry API --
 
 async function fetchAllPacks(): Promise<PackInfo[]> {
@@ -199,14 +218,17 @@ async function fetchAllPacks(): Promise<PackInfo[]> {
   return data.packs;
 }
 
-async function updatePackStatus(
-  slug: string,
-  status: "active" | "invalid",
-  warnings: string[],
-  validationErrors: string[]
-): Promise<boolean> {
+interface UpdateStatusPayload {
+  slug: string;
+  status: "active" | "invalid";
+  warnings: string[];
+  validationErrors: string[];
+  deepValidatedAt: string;
+}
+
+async function updatePackStatus(payload: UpdateStatusPayload): Promise<boolean> {
   if (!REINDEX_SECRET) {
-    console.log(`  [dry-run] Would update ${slug} → ${status}`);
+    console.log(`  [dry-run] Would update ${payload.slug} → ${payload.status}`);
     return true;
   }
   const res = await fetch(`${REGISTRY_URL}/api/packs/update-status`, {
@@ -215,11 +237,11 @@ async function updatePackStatus(
       "Content-Type": "application/json",
       Authorization: `Bearer ${REINDEX_SECRET}`,
     },
-    body: JSON.stringify({ slug, status, warnings, validationErrors }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    console.error(`  Failed to update ${slug}: HTTP ${res.status}${body ? ` — ${body}` : ""}`);
+    console.error(`  Failed to update ${payload.slug}: HTTP ${res.status}${body ? ` — ${body}` : ""}`);
     return false;
   }
   return true;
@@ -353,13 +375,13 @@ async function validatePack(pack: PackInfo): Promise<ValidationReport> {
     statusChanged: false,
   };
 
-  const match = pack.repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
-  if (!match) {
+  const parsed = parseGitHubUrl(pack.repoUrl);
+  if (!parsed) {
     report.errors.push("Invalid repo URL");
     report.newStatus = "invalid";
     return report;
   }
-  const [, owner, repo] = match;
+  const { owner, repo } = parsed;
 
   // Fetch default branch
   const branch = await fetchDefaultBranch(owner, repo);
@@ -420,8 +442,17 @@ async function main() {
 
   const reports: ValidationReport[] = [];
 
+  let skippedCount = 0;
+
   for (const pack of packs) {
     process.stdout.write(`  ${pack.slug} ... `);
+
+    if (canSkipValidation(pack)) {
+      console.log(`⏭️  SKIPPED (unchanged, no warnings)`);
+      skippedCount++;
+      continue;
+    }
+
     let report: ValidationReport;
     try {
       report = await validatePack(pack);
@@ -454,13 +485,18 @@ async function main() {
     const warningsChanged = JSON.stringify(report.warnings) !== JSON.stringify(pack.warnings ?? []);
     const errorsChanged = JSON.stringify(report.errors) !== JSON.stringify(pack.validationErrors ?? []);
 
-    if (report.statusChanged || warningsChanged || errorsChanged) {
-      // Merge heuristic hints into warnings for storage
-      const allWarnings = [...report.warnings, ...report.heuristics];
-      const updated = await updatePackStatus(report.slug, report.newStatus, allWarnings, report.errors);
-      if (!updated) {
-        console.log(`    ⚠️  Failed to update status for ${report.slug}`);
-      }
+    // Always update to record deepValidatedAt (and any data changes)
+    const now = new Date().toISOString();
+    const allWarnings = [...report.warnings, ...report.heuristics];
+    const updated = await updatePackStatus({
+      slug: report.slug,
+      status: report.newStatus,
+      warnings: allWarnings,
+      validationErrors: report.errors,
+      deepValidatedAt: now,
+    });
+    if (!updated) {
+      console.log(`    ⚠️  Failed to update status for ${report.slug}`);
     }
   }
 
@@ -472,7 +508,9 @@ async function main() {
   const withHeuristics = reports.filter((r) => r.heuristics.length > 0);
 
   console.log("\n=== Summary ===\n");
-  console.log(`  Total:           ${reports.length}`);
+  console.log(`  Total:           ${packs.length}`);
+  console.log(`  Skipped:         ${skippedCount}`);
+  console.log(`  Validated:       ${reports.length}`);
   console.log(`  Valid:           ${valid.length}`);
   console.log(`  Invalid:         ${invalid.length}`);
   console.log(`  Status changed:  ${changed.length}`);
@@ -491,7 +529,9 @@ async function main() {
     lines.push(
       `## Deep Validation Report\n`,
       `| Metric | Count |\n|--------|-------|`,
-      `| Total packs | ${reports.length} |`,
+      `| Total packs | ${packs.length} |`,
+      `| Skipped (unchanged) | ${skippedCount} |`,
+      `| Validated | ${reports.length} |`,
       `| Active | ${valid.length} |`,
       `| Invalid | ${invalid.length} |`,
       `| Status changed | ${changed.length} |`,

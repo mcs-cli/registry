@@ -15,6 +15,7 @@ export interface PackEntry {
   indexedAt: string;
   warnings?: string[];
   validationErrors?: string[];
+  deepValidatedAt?: string;
 }
 
 export type PackStatus = "active" | "unavailable" | "invalid";
@@ -71,6 +72,7 @@ export interface SubmitRequest {
   repoUrl: string;
   turnstileToken: string;
   honeypot?: string;
+  confirmWarnings?: boolean;
 }
 
 export interface Env {

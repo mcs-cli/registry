@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "30 4 * * *" # Daily at 04:30 UTC
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Force validation of all packs (skip unchanged-pack optimization)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,4 +35,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
           REINDEX_SECRET: ${{ secrets.REINDEX_SECRET }}
+          FORCE_ALL: ${{ inputs.force }}
         run: npx tsx scripts/validate.ts

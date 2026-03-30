@@ -19,10 +19,13 @@ export async function handleListPacks(
   }
 
   const slugs = JSON.parse(indexRaw) as string[];
-  const packs: PackEntry[] = [];
 
-  for (const slug of slugs) {
-    const raw = await env.PACKS.get(`pack:${slug}`);
+  const entries = await Promise.all(
+    slugs.map((slug) => env.PACKS.get(`pack:${slug}`))
+  );
+
+  const packs: PackEntry[] = [];
+  for (const raw of entries) {
     if (!raw) continue;
     const pack = JSON.parse(raw) as PackEntry;
     if (!includeAll && pack.status !== "active") continue;
@@ -128,6 +131,7 @@ export interface UpdatePackStatusRequest {
   status?: "active" | "invalid" | "unavailable";
   warnings?: string[];
   validationErrors?: string[];
+  deepValidatedAt?: string;
 }
 
 export async function handleUpdatePackStatus(
@@ -160,6 +164,7 @@ export async function handleUpdatePackStatus(
   if (body.status) pack.status = body.status;
   if (body.warnings !== undefined) pack.warnings = body.warnings.length > 0 ? body.warnings : undefined;
   if (body.validationErrors !== undefined) pack.validationErrors = body.validationErrors.length > 0 ? body.validationErrors : undefined;
+  if (body.deepValidatedAt !== undefined) pack.deepValidatedAt = body.deepValidatedAt;
   pack.indexedAt = new Date().toISOString();
 
   await env.PACKS.put(`pack:${pack.slug}`, JSON.stringify(pack));
