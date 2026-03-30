@@ -42,9 +42,12 @@ export async function handleListPacks(
     scored = packs.map((pack) => ({ pack, score: 0 }));
   }
 
-  // Sort
+  // Sort: search relevance first, then warnings-free before warnings, then stars/recent
   scored.sort((a, b) => {
     if (query && a.score !== b.score) return b.score - a.score;
+    const aHasWarnings = a.pack.warnings && a.pack.warnings.length > 0 ? 1 : 0;
+    const bHasWarnings = b.pack.warnings && b.pack.warnings.length > 0 ? 1 : 0;
+    if (aHasWarnings !== bHasWarnings) return aHasWarnings - bHasWarnings;
     if (sort === "recent") {
       return new Date(b.pack.pushedAt).getTime() - new Date(a.pack.pushedAt).getTime();
     }
