@@ -109,6 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
       payload.turnstileToken = turnstileToken;
     }
 
+    submitResult.style.display = 'none';
     submitBtn.disabled = true;
     submitBtn.style.display = confirmWarnings ? 'none' : '';
     submitBtn.textContent = confirmWarnings ? 'Submitting...' : 'Validating...';
@@ -155,10 +156,12 @@ document.addEventListener('DOMContentLoaded', () => {
       showResult('error', 'Network error. Please try again.');
     } finally {
       submitBtn.disabled = false;
-      submitBtn.style.display = '';
-      submitBtn.textContent = 'Submit Pack';
-      if (typeof turnstile !== 'undefined' && !pendingConfirmationToken) {
-        turnstile.reset();
+      if (!pendingConfirmationToken) {
+        submitBtn.style.display = '';
+        submitBtn.textContent = 'Submit Pack';
+        if (typeof turnstile !== 'undefined') {
+          turnstile.reset();
+        }
       }
     }
   }
