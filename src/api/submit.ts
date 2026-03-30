@@ -1,7 +1,7 @@
 import type { Env, PackEntry, SubmitRequest } from "../types.js";
 import { fetchRepoMetadata, fetchRepoTree, fetchTechpackYaml, parseGitHubUrl } from "../lib/github.js";
 import { verifyTurnstile } from "../lib/turnstile.js";
-import { validateTechpackYaml, validateFileReferences } from "../lib/validator.js";
+import { validateTechpackYaml, validateFileReferences, runHeuristics } from "../lib/validator.js";
 import { jsonResponse } from "./packs.js";
 
 const MAX_SUBMISSIONS_PER_HOUR = 5;
@@ -138,8 +138,14 @@ export async function handleSubmit(
     fileWarnings = fileValidation.warnings;
   }
 
+  // Heuristic checks (unreferenced files, missing brew packages)
+  let heuristicHints: string[] = [];
+  if (repoTree && validation.manifest) {
+    heuristicHints = runHeuristics(validation.manifest, repoTree);
+  }
+
   // If there are warnings and the user hasn't confirmed, ask for confirmation
-  const allWarnings = [...validation.warnings, ...fileWarnings];
+  const allWarnings = [...validation.warnings, ...fileWarnings, ...heuristicHints];
   if (allWarnings.length > 0 && !body.confirmWarnings) {
     return jsonResponse({
       requiresConfirmation: true,

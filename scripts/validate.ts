@@ -9,7 +9,7 @@
  *   REGISTRY_URL          — Registry API base URL (e.g., https://techpacks.mcs-cli.dev)
  *   REINDEX_SECRET        — Auth token for the update-status endpoint
  */
-import { validateTechpackYaml, validateFileReferences } from "../src/lib/validator.js";
+import { validateTechpackYaml, validateFileReferences, runHeuristics } from "../src/lib/validator.js";
 import { parseGitHubUrl } from "../src/lib/github.js";
 import type { RepoTree } from "../src/types.js";
 
@@ -114,83 +114,6 @@ async function fetchRepoTree(owner: string, repo: string, branch: string): Promi
     else if (entry.type === "tree") directories.add(entry.path);
   }
   return { files, directories };
-}
-
-// -- Heuristic checks (Actions-only, too expensive for Worker) --
-
-function runHeuristics(
-  manifest: Record<string, unknown>,
-  tree: RepoTree
-): string[] {
-  const hints: string[] = [];
-
-  const components = (manifest.components ?? []) as Array<Record<string, unknown>>;
-
-  // Collect all referenced source paths
-  const referencedPaths = new Set<string>();
-  for (const comp of components) {
-    for (const key of ["hook", "command", "skill", "agent"] as const) {
-      const shorthand = comp[key] as Record<string, unknown> | undefined;
-      if (shorthand?.source && typeof shorthand.source === "string") {
-        referencedPaths.add(shorthand.source.replace(/^\.\//, "").trim());
-      }
-    }
-    if (typeof comp.settingsFile === "string") {
-      referencedPaths.add(comp.settingsFile.replace(/^\.\//, "").trim());
-    }
-    const action = comp.installAction as Record<string, unknown> | undefined;
-    if (action?.source && typeof action.source === "string") {
-      referencedPaths.add(action.source.replace(/^\.\//, "").trim());
-    }
-  }
-
-  const templates = (manifest.templates ?? []) as Array<Record<string, unknown>>;
-  for (const t of templates) {
-    if (typeof t.contentFile === "string") {
-      referencedPaths.add(t.contentFile.replace(/^\.\//, "").trim());
-    }
-  }
-
-  // Heuristic 1: Files in well-known directories that are not referenced
-  const wellKnownDirs = ["hooks", "skills", "commands", "agents", "templates"];
-  const referencedPathsArray = [...referencedPaths];
-  for (const dir of wellKnownDirs) {
-    if (!tree.directories.has(dir)) continue;
-    for (const file of tree.files) {
-      if (!file.startsWith(`${dir}/`)) continue;
-      const isReferenced = referencedPaths.has(file) ||
-        referencedPathsArray.some((p) => file.startsWith(`${p}/`));
-      if (!isReferenced) {
-        hints.push(`Unreferenced file '${file}' in ${dir}/ directory — may be unwired content`);
-      }
-    }
-  }
-
-  // Heuristic 2: MCP server uses python/node but no matching brew package
-  const mcpComponents = components.filter((c) => {
-    const type = c.type as string | undefined;
-    return type === "mcpServer" || c.mcp !== undefined;
-  });
-  const brewIds = new Set(
-    components
-      .filter((c) => c.type === "brewPackage" || c.brew !== undefined)
-      .map((c) => c.id as string)
-  );
-
-  for (const mcp of mcpComponents) {
-    const mcpConfig = mcp.mcp as Record<string, unknown> | undefined;
-    const command = mcpConfig?.command as string | undefined;
-    if (!command) continue;
-
-    if ((command === "python" || command === "python3") && !brewIds.has("python") && !brewIds.has("python3")) {
-      hints.push(`MCP server '${mcp.id}' uses '${command}' but no python brew package is declared`);
-    }
-    if ((command === "node" || command === "npx") && !brewIds.has("node")) {
-      hints.push(`MCP server '${mcp.id}' uses '${command}' but no node brew package is declared`);
-    }
-  }
-
-  return hints;
 }
 
 // -- Skip logic --
@@ -421,7 +344,7 @@ async function validatePack(pack: PackInfo): Promise<ValidationReport> {
     report.warnings.push(...fileValidation.warnings);
   }
 
-  // Heuristic checks (Actions-only)
+  // Heuristic checks
   if (validation.manifest) {
     report.heuristics.push(...runHeuristics(validation.manifest, tree));
   }
