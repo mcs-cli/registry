@@ -83,6 +83,57 @@
 </div>
 </section>
 
+<section id="about">
+<div class="container">
+<div class="section-label fade-in">Tech Packs</div>
+<h2 class="section-title fade-in fade-in-delay-1">A Git repo. A YAML manifest. <span class="gradient-text">That's it.</span></h2>
+
+<div class="techpack-layout fade-in fade-in-delay-2">
+<div class="techpack-explainer">
+<p>A <strong>tech pack</strong> is a portable configuration package for Claude Code. It lives in a Git repository alongside a single <code>techpack.yaml</code> manifest that declares everything Claude needs for your stack — MCP servers, skills, hooks, commands, templates, and more.</p>
+<p>Packs are modular by design. Install one for your framework, another for your team's conventions, and a third for your deployment pipeline. Each pack stays independent, versioned, and easy to update.</p>
+<p>Because every pack is just a repo, sharing is built in. Publish your setup for the community or keep it private for your team — either way, one command is all it takes to install.</p>
+
+<div class="techpack-ctas">
+<a href="https://github.com/mcs-cli/mcs/tree/main/docs/creating-tech-packs.md" target="_blank" rel="noopener" class="btn-primary">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg>
+Learn More
+</a>
+<a href="#submit" class="btn-ghost">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+Create a Pack
+</a>
+</div>
+</div>
+
+<div class="yaml-block">
+<div class="yaml-header">
+<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+techpack.yaml
+</div>
+<div class="yaml-body"><span class="y-key">identifier:</span> <span class="y-str">"my-team-pack"</span>          <span class="y-annotation y-annotation--purple">← unique identifier</span>
+<span class="y-key">displayName:</span> <span class="y-val">My Team Pack</span>
+<span class="y-key">description:</span> <span class="y-val">Everything our team needs</span>
+
+<span class="y-key">components:</span>
+<span class="y-list">  - </span><span class="y-key">id:</span> <span class="y-val">docs-search</span>              <span class="y-annotation y-annotation--teal">← MCP server</span>
+<span class="y-list">    </span><span class="y-key">mcp:</span>
+<span class="y-list">      </span><span class="y-key">command:</span> <span class="y-val">npx</span>
+<span class="y-list">      </span><span class="y-key">args:</span> <span class="y-str">["-y", "@team/docs-search"]</span>
+
+<span class="y-list">  - </span><span class="y-key">id:</span> <span class="y-val">code-review</span>             <span class="y-annotation y-annotation--teal">← skill</span>
+<span class="y-list">    </span><span class="y-key">skill:</span>
+<span class="y-list">      </span><span class="y-key">source:</span> <span class="y-val">skills/code-review</span>
+<span class="y-list">      </span><span class="y-key">destination:</span> <span class="y-val">code-review</span>
+
+<span class="y-key">templates:</span>                          <span class="y-annotation y-annotation--purple">← CLAUDE.md sections</span>
+<span class="y-list">  - </span><span class="y-key">sectionIdentifier:</span> <span class="y-val">guidelines</span>
+<span class="y-list">    </span><span class="y-key">contentFile:</span> <span class="y-val">templates/guidelines.md</span></div>
+</div>
+</div>
+</div>
+</section>
+
 <section id="submit">
 <div class="container">
 <div class="section-label fade-in">Submit a Pack</div>
