@@ -90,24 +90,30 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // -- Submit form --
-  async function submitPack(repoUrl, honeypot, confirmWarnings) {
-    // Get Turnstile token
-    const turnstileToken = typeof turnstile !== 'undefined'
-      ? turnstile.getResponse()
-      : '';
+  let pendingConfirmationToken = null;
 
-    if (!turnstileToken && typeof turnstile !== 'undefined') {
-      showResult('error', 'Please complete the verification challenge.');
-      return;
+  async function submitPack(repoUrl, honeypot, confirmWarnings) {
+    const payload = { repoUrl, honeypot };
+
+    if (confirmWarnings && pendingConfirmationToken) {
+      payload.confirmWarnings = true;
+      payload.confirmationToken = pendingConfirmationToken;
+    } else {
+      const turnstileToken = typeof turnstile !== 'undefined'
+        ? turnstile.getResponse()
+        : '';
+      if (!turnstileToken && typeof turnstile !== 'undefined') {
+        showResult('error', 'Please complete the verification challenge.');
+        return;
+      }
+      payload.turnstileToken = turnstileToken;
     }
 
     submitBtn.disabled = true;
+    submitBtn.style.display = confirmWarnings ? 'none' : '';
     submitBtn.textContent = confirmWarnings ? 'Submitting...' : 'Validating...';
 
     try {
-      const payload = { repoUrl, turnstileToken, honeypot };
-      if (confirmWarnings) payload.confirmWarnings = true;
-
       const response = await fetch('/api/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -117,6 +123,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await response.json();
 
       if (data.requiresConfirmation) {
+        pendingConfirmationToken = data.confirmationToken;
+        submitBtn.style.display = 'none';
         let html = '<strong>This pack has validation warnings:</strong>';
         html += '<ul>' + data.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('') + '</ul>';
         html += '<p style="font-size:.78rem;color:var(--text-secondary);margin:.75rem 0 .5rem">These are non-fatal issues. The pack will still work, but you may want to fix them.</p>';
@@ -130,6 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       if (response.ok && data.success) {
+        pendingConfirmationToken = null;
         const warningNote = data.pack.warnings && data.pack.warnings.length > 0
           ? ' (with warnings)' : '';
         showResult('success', `Pack <strong>${escapeHtml(data.pack.displayName)}</strong> added to the registry!${warningNote}`);
@@ -146,8 +155,9 @@ document.addEventListener('DOMContentLoaded', () => {
       showResult('error', 'Network error. Please try again.');
     } finally {
       submitBtn.disabled = false;
+      submitBtn.style.display = '';
       submitBtn.textContent = 'Submit Pack';
-      if (typeof turnstile !== 'undefined') {
+      if (typeof turnstile !== 'undefined' && !pendingConfirmationToken) {
         turnstile.reset();
       }
     }

@@ -70,9 +70,10 @@ export interface ExtractedPackData {
 
 export interface SubmitRequest {
   repoUrl: string;
-  turnstileToken: string;
+  turnstileToken?: string;
   honeypot?: string;
   confirmWarnings?: boolean;
+  confirmationToken?: string;
 }
 
 export interface Env {

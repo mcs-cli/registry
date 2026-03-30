@@ -21,9 +21,6 @@ export async function handleSubmit(
   if (!body.repoUrl || typeof body.repoUrl !== "string") {
     return jsonResponse({ error: "repoUrl is required" }, 400);
   }
-  if (!body.turnstileToken || typeof body.turnstileToken !== "string") {
-    return jsonResponse({ error: "turnstileToken is required" }, 400);
-  }
 
   // Honeypot check — bots fill hidden fields, humans don't
   if (body.honeypot) {
@@ -41,17 +38,24 @@ export async function handleSubmit(
     );
   }
 
-  // Turnstile verification
-  const turnstileResult = await verifyTurnstile(
-    body.turnstileToken,
-    env.TURNSTILE_SECRET_KEY,
-    ip
-  );
-  if (!turnstileResult.success) {
-    return jsonResponse(
-      { error: "Bot verification failed. Please try again." },
-      403
+  // Bot verification: Turnstile on first submit, HMAC confirmation token on "Submit Anyway"
+  if (body.confirmWarnings && body.confirmationToken) {
+    const valid = await verifyConfirmationToken(body.confirmationToken, body.repoUrl, ip, env.TURNSTILE_SECRET_KEY);
+    if (!valid) {
+      return jsonResponse({ error: "Confirmation expired. Please submit again." }, 403);
+    }
+  } else {
+    if (!body.turnstileToken || typeof body.turnstileToken !== "string") {
+      return jsonResponse({ error: "turnstileToken is required" }, 400);
+    }
+    const turnstileResult = await verifyTurnstile(
+      body.turnstileToken,
+      env.TURNSTILE_SECRET_KEY,
+      ip
     );
+    if (!turnstileResult.success) {
+      return jsonResponse({ error: "Bot verification failed. Please try again." }, 403);
+    }
   }
 
   // URL validation
@@ -147,9 +151,11 @@ export async function handleSubmit(
   // If there are warnings and the user hasn't confirmed, ask for confirmation
   const allWarnings = [...validation.warnings, ...fileWarnings, ...heuristicHints];
   if (allWarnings.length > 0 && !body.confirmWarnings) {
+    const confirmationToken = await generateConfirmationToken(body.repoUrl, ip, env.TURNSTILE_SECRET_KEY);
     return jsonResponse({
       requiresConfirmation: true,
       warnings: allWarnings,
+      confirmationToken,
     }, 200);
   }
 
@@ -219,4 +225,33 @@ async function incrementRateLimit(ip: string, env: Env): Promise<void> {
   const count = raw ? parseInt(raw, 10) + 1 : 1;
   // TTL of 1 hour
   await env.RATE_LIMIT.put(key, String(count), { expirationTtl: 3600 });
+}
+
+const CONFIRMATION_TTL_SECONDS = 300; // 5 minutes
+
+async function hmacSign(data: string, secret: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return btoa(String.fromCharCode(...new Uint8Array(sig)));
+}
+
+async function generateConfirmationToken(repoUrl: string, ip: string, secret: string): Promise<string> {
+  const ts = Math.floor(Date.now() / 1000);
+  const mac = await hmacSign(`${repoUrl}:${ip}:${ts}`, secret);
+  return `${ts}:${mac}`;
+}
+
+async function verifyConfirmationToken(token: string, repoUrl: string, ip: string, secret: string): Promise<boolean> {
+  const idx = token.indexOf(":");
+  if (idx === -1) return false;
+  const ts = parseInt(token.slice(0, idx), 10);
+  if (isNaN(ts) || Math.floor(Date.now() / 1000) - ts > CONFIRMATION_TTL_SECONDS) return false;
+  const expected = await hmacSign(`${repoUrl}:${ip}:${ts}`, secret);
+  return expected === token.slice(idx + 1);
 }
