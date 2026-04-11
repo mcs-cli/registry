@@ -323,18 +323,55 @@ document.addEventListener('DOMContentLoaded', () => {
   function buildIssueUrl(pack) {
     const warnings = pack.warnings ?? [];
     const errors = pack.validationErrors ?? [];
-    const title = `Pack validation issues on techpacks.mcs-cli.dev`;
+    const hasErrors = errors.length > 0;
+    const packRef = pack.identifier || pack.slug;
+    const packUrl = `https://techpacks.mcs-cli.dev/?pack=${pack.slug}`;
+
+    const title = hasErrors
+      ? `techpacks.mcs-cli.dev: validation errors in techpack.yaml`
+      : `techpacks.mcs-cli.dev: validation warnings in techpack.yaml`;
+
     const lines = [
-      `Your tech pack \`${pack.identifier || pack.slug}\` has validation issues flagged by the MCS registry:`,
+      `Hi! Your tech pack \`${packRef}\` is listed on the [MCS Tech Pack Registry](https://techpacks.mcs-cli.dev), and automated validation flagged some issues on the latest commit to your default branch.`,
       ``,
     ];
-    if (errors.length) {
-      lines.push(`## Validation errors`, ``, ...errors.map(e => `- ${e}`), ``);
+
+    if (hasErrors) {
+      lines.push(
+        `> **Impact:** Your pack is currently shown at the bottom of the registry grid with a red "validation errors" banner. Users can still see it, but \`mcs pack add\` may fail to install until the errors are fixed.`,
+        ``,
+        `## Validation errors`,
+        ``,
+        ...errors.map(e => `- \`${e}\``),
+        ``,
+      );
+    } else {
+      lines.push(
+        `> **Impact:** Your pack is listed normally, but sorted below clean packs with a small warning indicator on the card.`,
+        ``,
+      );
     }
+
     if (warnings.length) {
-      lines.push(`## Warnings`, ``, ...warnings.map(w => `- ${w}`), ``);
+      lines.push(
+        `## Warnings`,
+        ``,
+        ...warnings.map(w => `- \`${w}\``),
+        ``,
+      );
     }
-    lines.push(`---`, `Reported from https://techpacks.mcs-cli.dev/?pack=${pack.slug}`);
+
+    lines.push(
+      `## How to fix`,
+      ``,
+      `1. Update \`techpack.yaml\` in your repository to address the items above.`,
+      `2. Push the fix to your default branch.`,
+      `3. The registry re-validates automatically every 6 hours. For an immediate refresh, re-submit your repo at https://techpacks.mcs-cli.dev.`,
+      ``,
+      `---`,
+      `Filed from ${packUrl} via the "Report issue" button on the pack detail modal.`,
+    );
+
     const body = lines.join('\n');
     return `${pack.repoUrl}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
   }
