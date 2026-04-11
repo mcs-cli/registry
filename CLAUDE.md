@@ -73,7 +73,7 @@ All routing is manual string matching in `_worker.ts → handleApiRoute()`.
 - **On-demand**: `handleGetPack` fires background `reindexSinglePack` via `ctx.waitUntil` if data is >1h stale
 - **Smart re-fetch**: `techpack.yaml` only re-fetched if `pushedAt` changed
 - **Batch GraphQL**: Up to 50 repos per GitHub API call
-- **Pack statuses**: `active | unavailable | invalid` — non-active packs are soft-deleted (kept in KV, filtered from listing)
+- **Pack statuses**: `active | unavailable | invalid` — `unavailable` packs are pruned from `index:all` (KV entry kept, filtered from listing). `invalid` packs stay in `index:all` and render at the bottom of the grid with a red banner; the pack modal exposes a "Report issue" button that builds a prefilled GitHub issue URL. See `.claude/memories/decision_architecture_reindex_pruning_and_recovery.md`.
 
 ## Secrets
 

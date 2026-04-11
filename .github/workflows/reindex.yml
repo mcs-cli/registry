@@ -71,7 +71,7 @@ jobs:
           | Unchanged | $unchanged |
           | Unavailable | $unavailable |
           | Invalid | $invalid |
-          | Removed from index | $removed |
+          | Pruned (unavailable) | $removed |
           | Errors | $error_count |
           EOF
 
