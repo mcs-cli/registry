@@ -169,17 +169,17 @@ export async function handleReindex(env: Env, options?: { force?: boolean }): Pr
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
   }
 
-  // Remove invalid and unavailable packs from the index (preserve slugs missing from KV)
-  const activeSlugs = slugs.filter((slug) => {
+  // Remove unavailable packs from the index (invalid packs stay; preserve slugs missing from KV)
+  const keptSlugs = slugs.filter((slug) => {
     const pack = packMap.get(slug);
     if (!pack) return true; // KV read may have failed — keep in index for next run
-    return pack.status === "active";
+    return pack.status !== "unavailable";
   });
 
-  if (activeSlugs.length !== slugs.length) {
-    result.removed = slugs.length - activeSlugs.length;
-    await env.PACKS.put("index:all", JSON.stringify(activeSlugs));
-    console.log(`[reindex] Pruned ${result.removed} non-active packs from index`);
+  if (keptSlugs.length !== slugs.length) {
+    result.removed = slugs.length - keptSlugs.length;
+    await env.PACKS.put("index:all", JSON.stringify(keptSlugs));
+    console.log(`[reindex] Pruned ${result.removed} unavailable packs from index`);
   }
 
   console.log(

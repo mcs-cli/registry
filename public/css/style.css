@@ -157,7 +157,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;o
 /* Unavailable/invalid banner */
 .pack-card-banner{padding:.4rem .6rem;border-radius:var(--radius-sm);font-size:.72rem;font-weight:500;margin-bottom:.75rem}
 .pack-card-banner--unavailable{background:rgba(248,113,113,0.1);color:var(--red);border:1px solid rgba(248,113,113,0.2)}
-.pack-card-banner--invalid{background:rgba(245,158,11,0.1);color:var(--amber);border:1px solid rgba(245,158,11,0.2)}
+.pack-card-banner--invalid{background:rgba(248,113,113,0.1);color:var(--red);border:1px solid rgba(248,113,113,0.2)}
 
 /* ==========================================================================
    Registry — Empty State

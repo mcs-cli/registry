@@ -28,26 +28,30 @@ export async function handleListPacks(
   for (const raw of entries) {
     if (!raw) continue;
     const pack = JSON.parse(raw) as PackEntry;
-    if (!includeAll && pack.status !== "active") continue;
+    if (!includeAll && pack.status === "unavailable") continue;
     packs.push(pack);
   }
 
-  let scored: Array<{ pack: PackEntry; score: number }>;
+  // Tier: 0=clean, 1=warnings, 2=invalid. Unavailable is filtered above, so only active/invalid reach here.
+  const tierOf = (p: PackEntry): number => {
+    if (p.status === "invalid") return 2;
+    if ((p.warnings?.length ?? 0) > 0) return 1;
+    return 0;
+  };
+
+  let scored: Array<{ pack: PackEntry; score: number; tier: number }>;
 
   if (query) {
     scored = packs
-      .map((pack) => ({ pack, score: computeSearchScore(pack, query) }))
+      .map((pack) => ({ pack, score: computeSearchScore(pack, query), tier: tierOf(pack) }))
       .filter((entry) => entry.score > 0);
   } else {
-    scored = packs.map((pack) => ({ pack, score: 0 }));
+    scored = packs.map((pack) => ({ pack, score: 0, tier: tierOf(pack) }));
   }
 
-  // Sort: search relevance first, then warnings-free before warnings, then stars/recent
   scored.sort((a, b) => {
     if (query && a.score !== b.score) return b.score - a.score;
-    const aHasWarnings = a.pack.warnings && a.pack.warnings.length > 0 ? 1 : 0;
-    const bHasWarnings = b.pack.warnings && b.pack.warnings.length > 0 ? 1 : 0;
-    if (aHasWarnings !== bHasWarnings) return aHasWarnings - bHasWarnings;
+    if (a.tier !== b.tier) return a.tier - b.tier;
     if (sort === "recent") {
       return new Date(b.pack.pushedAt).getTime() - new Date(a.pack.pushedAt).getTime();
     }
@@ -181,7 +185,7 @@ export async function handleUpdatePackStatus(
     slugs.push(pack.slug);
     slugs.sort();
     await env.PACKS.put("index:all", JSON.stringify(slugs));
-  } else if (pack.status !== "active" && inIndex) {
+  } else if (pack.status === "unavailable" && inIndex) {
     const filtered = slugs.filter((s) => s !== pack.slug);
     await env.PACKS.put("index:all", JSON.stringify(filtered));
   }
