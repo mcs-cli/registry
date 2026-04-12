@@ -134,6 +134,10 @@
           "type": "string",
           "description": "Shorthand: Shell command to execute."
         },
+        "shellInteractive": {
+          "type": "boolean",
+          "description": "When true, allocates a PTY so commands like sudo can prompt for passwords. Default: false."
+        },
         "hook": {
           "$ref": "#/definitions/copyFileShorthand",
           "description": "Shorthand: Hook file to copy."
@@ -225,6 +229,10 @@
         "scope": {
           "type": "string",
           "enum": ["local", "user", "project"]
+        },
+        "interactive": {
+          "type": "boolean",
+          "description": "Allocate PTY for shellCommand actions. Default: false."
         },
         "package": { "type": "string" },
         "entries": {
