@@ -1,0 +1,64 @@
+// Mirrors mcs's Sources/mcs/Core/GlobMatcher.swift: POSIX fnmatch(3) with
+// FNM_PATHNAME plus a `dir/` directory-suffix shortcut. Intentionally does NOT
+// support `**` recursion — registry/CLI parity requires identical semantics.
+
+export type Matcher = (path: string) => boolean;
+
+export function compileMatcher(pattern: string): Matcher {
+  const trimmed = pattern.trim();
+  if (trimmed.length === 0) return () => false;
+
+  if (trimmed.endsWith("/")) {
+    const dirName = trimmed.slice(0, -1);
+    if (dirName.length === 0) return () => false;
+    const prefix = `${dirName}/`;
+    return (path) => path === dirName || path.startsWith(prefix);
+  }
+
+  const re = compileFnmatch(trimmed);
+  return (path) => re.test(path);
+}
+
+export function compileAnyMatcher(patterns: readonly string[]): Matcher {
+  if (patterns.length === 0) return () => false;
+  const matchers = patterns.map(compileMatcher);
+  return (path) => matchers.some((m) => m(path));
+}
+
+export function globMatches(pattern: string, path: string): boolean {
+  return compileMatcher(pattern)(path);
+}
+
+function compileFnmatch(pattern: string): RegExp {
+  let out = "^";
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === "*") {
+      out += "[^/]*";
+      i++;
+    } else if (ch === "?") {
+      out += "[^/]";
+      i++;
+    } else if (ch === "[") {
+      const close = pattern.indexOf("]", i + 1);
+      if (close === -1) {
+        out += "\\[";
+        i++;
+      } else {
+        let cls = pattern.slice(i + 1, close);
+        if (cls.startsWith("!")) cls = "^" + cls.slice(1);
+        out += `[${cls}]`;
+        i = close + 1;
+      }
+    } else if (/[.+^$(){}|\\]/.test(ch)) {
+      out += `\\${ch}`;
+      i++;
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  out += "$";
+  return new RegExp(out);
+}

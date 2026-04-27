@@ -1,6 +1,12 @@
 import * as yaml from "js-yaml";
 import type { ExtractedPackData, ComponentCounts, ValidationResult, RepoTree } from "../types.js";
 import schema from "../../schema/techpack-schema.json";
+import { compileMatcher, compileAnyMatcher } from "./glob.js";
+import { BUILTIN_IGNORED_DIRS, BUILTIN_INFRASTRUCTURE_FILES } from "./builtinIgnore.js";
+
+const TECHPACK_MANIFEST_FILENAME = "techpack.yaml";
+
+const SOURCE_SHORTHAND_KEYS = ["hook", "command", "skill", "agent"] as const;
 
 // Derive validation constants from the JSON schema (single source of truth)
 const defs = schema.definitions;
@@ -154,6 +160,8 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
     }
   }
 
+  validateIgnoreField(manifest, errors);
+
   if (errors.length > 0) {
     return { valid: false, errors, warnings: [] };
   }
@@ -161,6 +169,91 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
   // Step 4: Extract pack data for indexing
   const packData = extractPackData(manifest, components);
   return { valid: true, errors: [], warnings: [], packData, manifest };
+}
+
+function normalizeReferencedPath(path: string): string {
+  return path.replace(/^\.\//, "").trim();
+}
+
+function hasReferencedAncestor(file: string, referenced: ReadonlySet<string>): boolean {
+  let i = file.lastIndexOf("/");
+  while (i > 0) {
+    if (referenced.has(file.slice(0, i))) return true;
+    i = file.lastIndexOf("/", i - 1);
+  }
+  return false;
+}
+
+export function collectReferencedPaths(manifest: Record<string, unknown>): Set<string> {
+  const paths = new Set<string>();
+  const components = (manifest.components ?? []) as Array<Record<string, unknown>>;
+
+  for (const comp of components) {
+    for (const key of SOURCE_SHORTHAND_KEYS) {
+      const shorthand = comp[key] as Record<string, unknown> | undefined;
+      if (shorthand && typeof shorthand.source === "string") {
+        paths.add(normalizeReferencedPath(shorthand.source));
+      }
+    }
+    if (typeof comp.settingsFile === "string") {
+      paths.add(normalizeReferencedPath(comp.settingsFile));
+    }
+    const action = comp.installAction as Record<string, unknown> | undefined;
+    if (action && typeof action.source === "string") {
+      paths.add(normalizeReferencedPath(action.source));
+    }
+  }
+
+  const templates = (manifest.templates ?? []) as Array<Record<string, unknown>>;
+  for (const t of templates) {
+    if (typeof t.contentFile === "string") {
+      paths.add(normalizeReferencedPath(t.contentFile));
+    }
+  }
+
+  const configureProject = manifest.configureProject as Record<string, unknown> | undefined;
+  if (configureProject && typeof configureProject.script === "string") {
+    paths.add(normalizeReferencedPath(configureProject.script));
+  }
+
+  return paths;
+}
+
+function validateIgnoreField(manifest: Record<string, unknown>, errors: string[]): void {
+  if (manifest.ignore === undefined) return;
+
+  if (!Array.isArray(manifest.ignore)) {
+    errors.push("'ignore' must be an array of strings");
+    return;
+  }
+
+  const referenced = collectReferencedPaths(manifest);
+
+  for (let i = 0; i < manifest.ignore.length; i++) {
+    const entry = manifest.ignore[i];
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      errors.push(`ignore[${i}] must be a non-empty string`);
+      continue;
+    }
+
+    const matcher = compileMatcher(entry);
+
+    if (matcher(TECHPACK_MANIFEST_FILENAME)) {
+      errors.push(
+        `ignore[${i}] '${entry}' matches techpack.yaml — silencing the manifest is not allowed (supply-chain safety)`
+      );
+      continue;
+    }
+
+    for (const ref of referenced) {
+      if (matcher(ref)) {
+        errors.push(
+          `ignore[${i}] '${entry}' matches referenced path '${ref}' — load-bearing files cannot be silenced`
+        );
+        break;
+      }
+    }
+  }
 }
 
 export function validateFileReferences(
@@ -177,8 +270,7 @@ export function validateFileReferences(
   for (const comp of components) {
     const id = (comp.id as string) ?? "unknown";
 
-    // Shorthand: hook, command, skill, agent (copyFileShorthand objects)
-    for (const key of ["hook", "command", "skill", "agent"] as const) {
+    for (const key of SOURCE_SHORTHAND_KEYS) {
       const shorthand = comp[key] as Record<string, unknown> | undefined;
       if (shorthand && typeof shorthand === "object" && typeof shorthand.source === "string") {
         pathsToCheck.push({ path: shorthand.source, label: `Component '${id}' ${key} source` });
@@ -212,9 +304,8 @@ export function validateFileReferences(
     pathsToCheck.push({ path: configureProject.script, label: "configureProject script" });
   }
 
-  // Validate each path
   for (const { path: rawPath, label } of pathsToCheck) {
-    const normalized = rawPath.replace(/^\.\//, "").trim();
+    const normalized = normalizeReferencedPath(rawPath);
 
     // source: "." or "./" — repo root, always exists but almost always wrong
     if (normalized === "" || normalized === ".") {
@@ -496,44 +587,34 @@ export function runHeuristics(
   const hints: string[] = [];
   const components = (manifest.components ?? []) as Array<Record<string, unknown>>;
 
-  // Collect all referenced source paths
-  const referencedPaths = new Set<string>();
-  for (const comp of components) {
-    for (const key of ["hook", "command", "skill", "agent"] as const) {
-      const shorthand = comp[key] as Record<string, unknown> | undefined;
-      if (shorthand?.source && typeof shorthand.source === "string") {
-        referencedPaths.add(shorthand.source.replace(/^\.\//, "").trim());
-      }
-    }
-    if (typeof comp.settingsFile === "string") {
-      referencedPaths.add(comp.settingsFile.replace(/^\.\//, "").trim());
-    }
-    const action = comp.installAction as Record<string, unknown> | undefined;
-    if (action?.source && typeof action.source === "string") {
-      referencedPaths.add(action.source.replace(/^\.\//, "").trim());
-    }
-  }
+  const referencedPaths = collectReferencedPaths(manifest);
+  const ignorePatterns = Array.isArray(manifest.ignore)
+    ? manifest.ignore.filter((p): p is string => typeof p === "string")
+    : [];
+  const ignoreMatcher = compileAnyMatcher(ignorePatterns);
 
-  const templates = (manifest.templates ?? []) as Array<Record<string, unknown>>;
-  for (const t of templates) {
-    if (typeof t.contentFile === "string") {
-      referencedPaths.add(t.contentFile.replace(/^\.\//, "").trim());
-    }
-  }
+  // Mirrors mcs PackHeuristics.checkUnreferencedFiles.
+  for (const dir of tree.directories) {
+    if (dir.includes("/")) continue;
+    if (BUILTIN_IGNORED_DIRS.has(dir)) continue;
+    if (ignoreMatcher(dir)) continue;
 
-  // Heuristic 1: Files in well-known directories that are not referenced
-  const wellKnownDirs = ["hooks", "skills", "commands", "agents", "templates"];
-  const referencedPathsArray = [...referencedPaths];
-  for (const dir of wellKnownDirs) {
-    if (!tree.directories.has(dir)) continue;
     for (const file of tree.files) {
       if (!file.startsWith(`${dir}/`)) continue;
-      const isReferenced = referencedPaths.has(file) ||
-        referencedPathsArray.some((p) => file.startsWith(`${p}/`));
-      if (!isReferenced) {
-        hints.push(`Unreferenced file '${file}' in ${dir}/ directory — may be unwired content`);
-      }
+      if (referencedPaths.has(file)) continue;
+      if (hasReferencedAncestor(file, referencedPaths)) continue;
+      if (ignoreMatcher(file)) continue;
+      hints.push(`Unreferenced file '${file}' in ${dir}/ directory — may be unwired content`);
     }
+  }
+
+  // Mirrors mcs PackHeuristics.checkRootLevelContentFiles.
+  for (const file of tree.files) {
+    if (file.includes("/")) continue;
+    if (BUILTIN_INFRASTRUCTURE_FILES.has(file)) continue;
+    if (referencedPaths.has(file)) continue;
+    if (ignoreMatcher(file)) continue;
+    hints.push(`Unreferenced file '${file}' at repository root — not referenced by any component`);
   }
 
   // Heuristic 2: MCP server uses python/node but no matching brew package

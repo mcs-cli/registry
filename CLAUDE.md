@@ -28,6 +28,8 @@ src/api/submit.ts       → POST /api/submit (Turnstile + honeypot + IP rate-lim
 src/api/reindex.ts      → POST /api/reindex (auth required, batch GitHub GraphQL)
 src/lib/github.ts       → GitHub API helpers (GraphQL batch metadata, REST yaml fetch)
 src/lib/validator.ts    → Manual techpack.yaml validation (Ajv cannot be used in Workers)
+src/lib/glob.ts         → POSIX fnmatch + dir/ shortcut — mirrors mcs Sources/mcs/Core/GlobMatcher.swift
+src/lib/builtinIgnore.ts→ BUILTIN_IGNORED_DIRS + BUILTIN_INFRASTRUCTURE_FILES — mirror mcs PackHeuristics.swift
 src/lib/turnstile.ts    → Cloudflare Turnstile verification
 public/                 → Static frontend (vanilla JS, no framework)
 public/_worker.js       → BUILD ARTIFACT (gitignored, esbuild output)
@@ -61,6 +63,7 @@ All routing is manual string matching in `_worker.ts → handleApiRoute()`.
 ## Key Gotchas
 
 - **Ajv is banned** — Workers block `new Function()`. Validation is manual in `src/lib/validator.ts`. The JSON Schema file exists for documentation only.
+- **`glob.ts` and `builtinIgnore.ts` mirror mcs verbatim** — registry/CLI parity is the contract. The matcher must not gain `**` support and the built-in sets are exact strings (not globs). Any drift means `mcs pack validate` and the registry website disagree on the same pack.
 - **`public/_worker.js` is gitignored** — must be built before deploy. If API routes return HTML instead of JSON, the Worker wasn't bundled.
 - **esbuild flags matter** — `--platform=browser` (not `neutral`) and `--conditions=workerd,worker,browser` are required.
 - **`wrangler kv` defaults to local** — always pass `--remote` for production KV operations.
