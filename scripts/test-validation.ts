@@ -3,7 +3,7 @@
  * Run: npx tsx scripts/test-validation.ts
  */
 import { execSync } from "child_process";
-import { validateTechpackYaml, validateFileReferences } from "../src/lib/validator.js";
+import { validateTechpackYaml, validateFileReferences, runHeuristics } from "../src/lib/validator.js";
 import type { RepoTree } from "../src/types.js";
 
 const GITHUB_TOKEN = execSync("gh auth token", { encoding: "utf-8" }).trim();
@@ -71,6 +71,8 @@ interface TestResult {
   status: "valid" | "invalid" | "error" | "no-techpack";
   errors: string[];
   warnings: string[];
+  heuristics: string[];
+  hasIgnoreField: boolean;
   components: string;
 }
 
@@ -78,7 +80,7 @@ async function testPack(repoUrl: string, label: string): Promise<TestResult> {
   const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
   if (!match) {
     console.log(`  SKIP: Invalid URL ${repoUrl}`);
-    return { repo: repoUrl, status: "error", errors: ["Invalid URL"], warnings: [], components: "" };
+    return { repo: repoUrl, status: "error", errors: ["Invalid URL"], warnings: [], heuristics: [], hasIgnoreField: false, components: "" };
   }
   const [, owner, repo] = match;
   const fullName = `${owner}/${repo}`;
@@ -88,52 +90,56 @@ async function testPack(repoUrl: string, label: string): Promise<TestResult> {
   const branch = await fetchDefaultBranch(owner, repo);
   if (!branch) {
     console.log("❌ repo not found");
-    return { repo: fullName, status: "error", errors: ["Repo not found"], warnings: [], components: "" };
+    return { repo: fullName, status: "error", errors: ["Repo not found"], warnings: [], heuristics: [], hasIgnoreField: false, components: "" };
   }
 
-  // 2. Fetch techpack.yaml
   const yaml = await fetchTechpackYaml(owner, repo, branch);
   if (!yaml) {
     console.log("❌ no techpack.yaml");
-    return { repo: fullName, status: "no-techpack", errors: [], warnings: [], components: "" };
+    return { repo: fullName, status: "no-techpack", errors: [], warnings: [], heuristics: [], hasIgnoreField: false, components: "" };
   }
 
-  // 3. Structural validation
   const validation = validateTechpackYaml(yaml);
   if (!validation.valid || !validation.packData) {
     console.log("❌ structural");
     for (const err of validation.errors) console.log(`       ${err}`);
-    return { repo: fullName, status: "invalid", errors: validation.errors, warnings: [], components: "" };
+    return { repo: fullName, status: "invalid", errors: validation.errors, warnings: [], heuristics: [], hasIgnoreField: false, components: "" };
   }
+
+  const hasIgnoreField =
+    Array.isArray(validation.manifest?.ignore) && validation.manifest.ignore.length > 0;
 
   const counts = validation.packData.components;
   const parts = Object.entries(counts).filter(([, v]) => v > 0).map(([k, v]) => `${v} ${k}`);
   const componentsStr = parts.join(", ") || "none";
 
-  // 4. File-existence validation
   const tree = await fetchRepoTree(owner, repo, branch);
   if (!tree || !validation.manifest) {
     console.log(`✅ structural (file validation skipped) — ${componentsStr}`);
-    return { repo: fullName, status: "valid", errors: [], warnings: ["File validation skipped"], components: componentsStr };
+    return { repo: fullName, status: "valid", errors: [], warnings: ["File validation skipped"], heuristics: [], hasIgnoreField, components: componentsStr };
   }
 
   const fileValidation = validateFileReferences(validation.manifest, tree);
+  const heuristics = runHeuristics(validation.manifest, tree);
+  const ignoreTag = hasIgnoreField ? " [ignore:✓]" : "";
 
   if (fileValidation.errors.length > 0) {
-    console.log(`❌ missing files — ${componentsStr}`);
+    console.log(`❌ missing files — ${componentsStr}${ignoreTag}`);
     for (const err of fileValidation.errors) console.log(`       ${err}`);
     for (const warn of fileValidation.warnings) console.log(`       ⚠️  ${warn}`);
-    return { repo: fullName, status: "invalid", errors: fileValidation.errors, warnings: fileValidation.warnings, components: componentsStr };
+    return { repo: fullName, status: "invalid", errors: fileValidation.errors, warnings: fileValidation.warnings, heuristics, hasIgnoreField, components: componentsStr };
   }
 
-  if (fileValidation.warnings.length > 0) {
-    console.log(`✅ with warnings — ${componentsStr}`);
+  const hasAnyNotice = fileValidation.warnings.length > 0 || heuristics.length > 0;
+  if (hasAnyNotice) {
+    console.log(`✅ with notices — ${componentsStr}${ignoreTag}`);
     for (const warn of fileValidation.warnings) console.log(`       ⚠️  ${warn}`);
-    return { repo: fullName, status: "valid", errors: [], warnings: fileValidation.warnings, components: componentsStr };
+    for (const hint of heuristics) console.log(`       💡 ${hint}`);
+    return { repo: fullName, status: "valid", errors: [], warnings: fileValidation.warnings, heuristics, hasIgnoreField, components: componentsStr };
   }
 
-  console.log(`✅ all files verified — ${componentsStr}`);
-  return { repo: fullName, status: "valid", errors: [], warnings: [], components: componentsStr };
+  console.log(`✅ all files verified — ${componentsStr}${ignoreTag}`);
+  return { repo: fullName, status: "valid", errors: [], warnings: [], heuristics: [], hasIgnoreField, components: componentsStr };
 }
 
 // -- Main --
@@ -176,12 +182,16 @@ async function main() {
   const errors = results.filter((r) => r.status === "error");
   const noTechpack = results.filter((r) => r.status === "no-techpack");
   const withWarnings = results.filter((r) => r.warnings.length > 0 && r.status === "valid");
+  const withHeuristics = results.filter((r) => r.heuristics.length > 0 && r.status === "valid");
+  const withIgnore = results.filter((r) => r.hasIgnoreField);
 
-  console.log(`  ✅ Valid:        ${valid.length}`);
-  console.log(`  ❌ Invalid:      ${invalid.length}`);
-  console.log(`  ⚠️  With warnings: ${withWarnings.length}`);
-  console.log(`  💀 No techpack:  ${noTechpack.length}`);
-  console.log(`  🔥 Errors:       ${errors.length}`);
+  console.log(`  ✅ Valid:           ${valid.length}`);
+  console.log(`  ❌ Invalid:         ${invalid.length}`);
+  console.log(`  ⚠️  With warnings:   ${withWarnings.length}`);
+  console.log(`  💡 With heuristics: ${withHeuristics.length}`);
+  console.log(`  📋 Declares ignore: ${withIgnore.length}`);
+  console.log(`  💀 No techpack:     ${noTechpack.length}`);
+  console.log(`  🔥 Errors:          ${errors.length}`);
 
   if (invalid.length > 0) {
     console.log("\n  Packs that would be marked INVALID:");
@@ -196,6 +206,15 @@ async function main() {
     for (const r of withWarnings) {
       console.log(`    ${r.repo}:`);
       for (const warn of r.warnings) console.log(`      - ${warn}`);
+    }
+  }
+
+  if (withHeuristics.length > 0) {
+    console.log("\n  Packs with unreferenced-file hints (candidates for `ignore:`):");
+    for (const r of withHeuristics) {
+      const tag = r.hasIgnoreField ? " [already declares ignore:]" : "";
+      console.log(`    ${r.repo}${tag}:`);
+      for (const hint of r.heuristics) console.log(`      - ${hint}`);
     }
   }
 

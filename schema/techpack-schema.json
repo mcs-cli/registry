@@ -60,6 +60,11 @@
       "type": "array",
       "items": { "$ref": "#/definitions/doctorCheck" },
       "description": "Pack-level doctor checks."
+    },
+    "ignore": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "POSIX glob patterns (or 'dir/' shortcut) for files to silence in unreferenced-file warnings. Cannot match techpack.yaml or any path referenced by a component, template, or configureProject script."
     }
   },
   "definitions": {
