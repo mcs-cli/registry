@@ -8,6 +8,8 @@ const TECHPACK_MANIFEST_FILENAME = "techpack.yaml";
 
 const SOURCE_SHORTHAND_KEYS = ["hook", "command", "skill", "agent"] as const;
 
+const UNREFERENCED_HINT_CAP = 50;
+
 // Derive validation constants from the JSON schema (single source of truth)
 const defs = schema.definitions;
 
@@ -236,7 +238,13 @@ function validateIgnoreField(manifest: Record<string, unknown>, errors: string[]
       continue;
     }
 
-    const matcher = compileMatcher(entry);
+    let matcher;
+    try {
+      matcher = compileMatcher(entry);
+    } catch {
+      errors.push(`ignore[${i}] '${entry}' is not a valid pattern`);
+      continue;
+    }
 
     if (matcher(TECHPACK_MANIFEST_FILENAME)) {
       errors.push(
@@ -591,30 +599,66 @@ export function runHeuristics(
   const ignorePatterns = Array.isArray(manifest.ignore)
     ? manifest.ignore.filter((p): p is string => typeof p === "string")
     : [];
-  const ignoreMatcher = compileAnyMatcher(ignorePatterns);
+  let ignoreMatcher: (path: string) => boolean;
+  try {
+    ignoreMatcher = compileAnyMatcher(ignorePatterns);
+  } catch {
+    ignoreMatcher = () => false;
+  }
+
+  const topLevelDirs = new Set<string>();
+  for (const dir of tree.directories) {
+    if (!dir.includes("/")) topLevelDirs.add(dir);
+  }
+
+  const filesByTopDir = new Map<string, string[]>();
+  const rootFiles: string[] = [];
+  for (const file of tree.files) {
+    const slash = file.indexOf("/");
+    if (slash < 0) {
+      rootFiles.push(file);
+      continue;
+    }
+    const top = file.slice(0, slash);
+    if (!topLevelDirs.has(top)) continue;
+    let bucket = filesByTopDir.get(top);
+    if (!bucket) {
+      bucket = [];
+      filesByTopDir.set(top, bucket);
+    }
+    bucket.push(file);
+  }
+
+  const pushHint = (hint: string): boolean => {
+    if (hints.length >= UNREFERENCED_HINT_CAP) {
+      if (hints.length === UNREFERENCED_HINT_CAP) {
+        hints.push(`… additional unreferenced files truncated (cap: ${UNREFERENCED_HINT_CAP})`);
+      }
+      return false;
+    }
+    hints.push(hint);
+    return true;
+  };
 
   // Mirrors mcs PackHeuristics.checkUnreferencedFiles.
-  for (const dir of tree.directories) {
-    if (dir.includes("/")) continue;
+  for (const [dir, files] of filesByTopDir) {
     if (BUILTIN_IGNORED_DIRS.has(dir)) continue;
     if (ignoreMatcher(dir)) continue;
 
-    for (const file of tree.files) {
-      if (!file.startsWith(`${dir}/`)) continue;
+    for (const file of files) {
       if (referencedPaths.has(file)) continue;
       if (hasReferencedAncestor(file, referencedPaths)) continue;
       if (ignoreMatcher(file)) continue;
-      hints.push(`Unreferenced file '${file}' in ${dir}/ directory — may be unwired content`);
+      if (!pushHint(`Unreferenced file '${file}' in ${dir}/ directory — may be unwired content`)) break;
     }
   }
 
   // Mirrors mcs PackHeuristics.checkRootLevelContentFiles.
-  for (const file of tree.files) {
-    if (file.includes("/")) continue;
+  for (const file of rootFiles) {
     if (BUILTIN_INFRASTRUCTURE_FILES.has(file)) continue;
     if (referencedPaths.has(file)) continue;
     if (ignoreMatcher(file)) continue;
-    hints.push(`Unreferenced file '${file}' at repository root — not referenced by any component`);
+    if (!pushHint(`Unreferenced file '${file}' at repository root — not referenced by any component`)) break;
   }
 
   // Heuristic 2: MCP server uses python/node but no matching brew package

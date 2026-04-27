@@ -60,5 +60,10 @@ function compileFnmatch(pattern: string): RegExp {
     }
   }
   out += "$";
-  return new RegExp(out);
+  try {
+    return new RegExp(out);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid glob pattern '${pattern}': ${message}`);
+  }
 }
