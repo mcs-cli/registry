@@ -122,6 +122,30 @@ console.log("\n=== runHeuristics ===");
   eq("referenced path no warning", runHeuristics(m, t).length, 0);
 }
 
+console.log("\n=== FNM_PATHNAME bracket-class semantics ===");
+
+// Bracket expressions must NEVER match `/` under FNM_PATHNAME, even when `/` is
+// listed inside the class — POSIX rules out class-driven slash matching.
+{
+  const m = baseManifest({ ignore: ["docs[/x]"] });
+  const t = tree(["hooks/handler.sh", "docs/foo.md", "docsx"], ["hooks", "docs"]);
+  const hints = runHeuristics(m, t);
+  // POSIX: docs[/x] matches `docsx` (literal x in class) but never `docs/foo.md`.
+  eq("[/x] matches docsx (literal class member)", hints.some((h) => h.includes("docsx")), false);
+  eq("[/x] does NOT match docs/foo.md (slash via class forbidden)", hints.some((h) => h.includes("docs/foo.md")), true);
+}
+
+// Negated class must also exclude `/` — even with `[!a]`, `/` should not match.
+{
+  // Pattern `foo[!a]` should NOT match `foo/`. Embed in a context the test can verify.
+  // We pick a pattern where matching `/` would silence a path it shouldn't.
+  const m = baseManifest({ ignore: ["foo[!a]"] });
+  const t = tree(["hooks/handler.sh", "foob", "foo/x"], ["hooks", "foo"]);
+  const hints = runHeuristics(m, t);
+  // `foo[!a]` matches `foob` (b is not a) — silenced.
+  eq("[!a] matches foob (negated class)", hints.some((h) => h.includes("foob") && !h.includes("foo/")), false);
+}
+
 console.log("\n=== Backslash escape (mcs FNM_PATHNAME, no FNM_NOESCAPE) ===");
 
 {

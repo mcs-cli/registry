@@ -55,9 +55,13 @@ function compileFnmatch(pattern: string): RegExp {
         out += "\\[";
         i++;
       } else {
+        // POSIX FNM_PATHNAME: bracket expressions can never match `/`.
+        // Strip `/` from positive classes; explicitly exclude it from negated ones.
         let cls = pattern.slice(i + 1, close);
-        if (cls.startsWith("!")) cls = "^" + cls.slice(1);
-        out += `[${cls}]`;
+        const negated = cls.startsWith("!");
+        if (negated) cls = cls.slice(1);
+        cls = cls.replace(/\//g, "");
+        out += negated ? `[^${cls}/]` : `[${cls}]`;
         i = close + 1;
       }
     } else if (REGEX_METACHARS.test(ch)) {

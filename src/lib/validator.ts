@@ -637,36 +637,38 @@ export function runHeuristics(
     bucket.push(file);
   }
 
-  const pushHint = (hint: string): boolean => {
+  let capped = false;
+  const pushHint = (hint: string): void => {
+    if (capped) return;
     if (hints.length >= UNREFERENCED_HINT_CAP) {
-      if (hints.length === UNREFERENCED_HINT_CAP) {
-        hints.push(`… additional unreferenced files truncated (cap: ${UNREFERENCED_HINT_CAP})`);
-      }
-      return false;
+      hints.push(`… additional unreferenced files truncated (cap: ${UNREFERENCED_HINT_CAP})`);
+      capped = true;
+      return;
     }
     hints.push(hint);
-    return true;
   };
 
   // Mirrors mcs PackHeuristics.checkUnreferencedFiles.
-  for (const [dir, files] of filesByTopDir) {
+  outer: for (const [dir, files] of filesByTopDir) {
     if (BUILTIN_IGNORED_DIRS.has(dir)) continue;
     if (ignoreMatcher(dir)) continue;
 
     for (const file of files) {
+      if (capped) break outer;
       if (referencedPaths.has(file)) continue;
       if (hasReferencedAncestor(file, referencedPaths)) continue;
       if (ignoreMatcher(file)) continue;
-      if (!pushHint(`Unreferenced file '${file}' in ${dir}/ directory — may be unwired content`)) break;
+      pushHint(`Unreferenced file '${file}' in ${dir}/ directory — may be unwired content`);
     }
   }
 
   // Mirrors mcs PackHeuristics.checkRootLevelContentFiles.
   for (const file of rootFiles) {
+    if (capped) break;
     if (BUILTIN_INFRASTRUCTURE_FILES.has(file)) continue;
     if (referencedPaths.has(file)) continue;
     if (ignoreMatcher(file)) continue;
-    if (!pushHint(`Unreferenced file '${file}' at repository root — not referenced by any component`)) break;
+    pushHint(`Unreferenced file '${file}' at repository root — not referenced by any component`);
   }
 
   // Heuristic 2: MCP server uses python/node but no matching brew package
