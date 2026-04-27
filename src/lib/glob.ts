@@ -29,12 +29,21 @@ export function globMatches(pattern: string, path: string): boolean {
   return compileMatcher(pattern)(path);
 }
 
+const REGEX_METACHARS = /[.+^$(){}|]/;
+
 function compileFnmatch(pattern: string): RegExp {
   let out = "^";
   let i = 0;
   while (i < pattern.length) {
     const ch = pattern[i];
-    if (ch === "*") {
+    if (ch === "\\" && i + 1 < pattern.length) {
+      // POSIX fnmatch default (no FNM_NOESCAPE): backslash escapes the next char to literal.
+      const next = pattern[i + 1];
+      out += REGEX_METACHARS.test(next) || next === "*" || next === "?" || next === "[" || next === "]" || next === "\\"
+        ? `\\${next}`
+        : next;
+      i += 2;
+    } else if (ch === "*") {
       out += "[^/]*";
       i++;
     } else if (ch === "?") {
@@ -51,7 +60,7 @@ function compileFnmatch(pattern: string): RegExp {
         out += `[${cls}]`;
         i = close + 1;
       }
-    } else if (/[.+^$(){}|\\]/.test(ch)) {
+    } else if (REGEX_METACHARS.test(ch)) {
       out += `\\${ch}`;
       i++;
     } else {

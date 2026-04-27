@@ -1,4 +1,4 @@
-// Mirrors mcs's Sources/mcs/ExternalPack/PackHeuristics.swift:97-100 and :215-220.
+// Mirrors mcs's PackHeuristics.ignoredDirectories and PackHeuristics.infrastructureFiles.
 // Keep these in sync with the mcs binary — drift means registry warnings disagree
 // with `mcs pack validate` output for the same pack.
 

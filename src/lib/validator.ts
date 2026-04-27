@@ -1,7 +1,7 @@
 import * as yaml from "js-yaml";
 import type { ExtractedPackData, ComponentCounts, ValidationResult, RepoTree } from "../types.js";
 import schema from "../../schema/techpack-schema.json";
-import { compileMatcher, compileAnyMatcher } from "./glob.js";
+import { compileMatcher, compileAnyMatcher, type Matcher } from "./glob.js";
 import { BUILTIN_IGNORED_DIRS, BUILTIN_INFRASTRUCTURE_FILES } from "./builtinIgnore.js";
 
 const TECHPACK_MANIFEST_FILENAME = "techpack.yaml";
@@ -106,7 +106,7 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
     );
   }
 
-  const components = (manifest.components ?? []) as Array<Record<string, unknown>>;
+  const components = (Array.isArray(manifest.components) ? manifest.components : []) as Array<Record<string, unknown>>;
   const componentIds = new Set<string>();
 
   for (const comp of components) {
@@ -150,7 +150,7 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
   }
 
   // Unique prompt keys
-  const prompts = (manifest.prompts ?? []) as Array<Record<string, unknown>>;
+  const prompts = (Array.isArray(manifest.prompts) ? manifest.prompts : []) as Array<Record<string, unknown>>;
   const promptKeys = new Set<string>();
   for (const prompt of prompts) {
     const key = prompt.key as string | undefined;
@@ -186,36 +186,43 @@ function hasReferencedAncestor(file: string, referenced: ReadonlySet<string>): b
   return false;
 }
 
-export function collectReferencedPaths(manifest: Record<string, unknown>): Set<string> {
+export function collectReferencedPaths(manifest: Record<string, unknown>): ReadonlySet<string> {
   const paths = new Set<string>();
-  const components = (manifest.components ?? []) as Array<Record<string, unknown>>;
 
-  for (const comp of components) {
+  const components = Array.isArray(manifest.components) ? manifest.components : [];
+  for (const raw of components) {
+    if (!raw || typeof raw !== "object") continue;
+    const comp = raw as Record<string, unknown>;
     for (const key of SOURCE_SHORTHAND_KEYS) {
-      const shorthand = comp[key] as Record<string, unknown> | undefined;
-      if (shorthand && typeof shorthand.source === "string") {
-        paths.add(normalizeReferencedPath(shorthand.source));
+      const shorthand = comp[key];
+      if (shorthand && typeof shorthand === "object") {
+        const source = (shorthand as Record<string, unknown>).source;
+        if (typeof source === "string") paths.add(normalizeReferencedPath(source));
       }
     }
     if (typeof comp.settingsFile === "string") {
       paths.add(normalizeReferencedPath(comp.settingsFile));
     }
-    const action = comp.installAction as Record<string, unknown> | undefined;
-    if (action && typeof action.source === "string") {
-      paths.add(normalizeReferencedPath(action.source));
+    const action = comp.installAction;
+    if (action && typeof action === "object") {
+      const source = (action as Record<string, unknown>).source;
+      if (typeof source === "string") paths.add(normalizeReferencedPath(source));
     }
   }
 
-  const templates = (manifest.templates ?? []) as Array<Record<string, unknown>>;
-  for (const t of templates) {
+  const templates = Array.isArray(manifest.templates) ? manifest.templates : [];
+  for (const raw of templates) {
+    if (!raw || typeof raw !== "object") continue;
+    const t = raw as Record<string, unknown>;
     if (typeof t.contentFile === "string") {
       paths.add(normalizeReferencedPath(t.contentFile));
     }
   }
 
-  const configureProject = manifest.configureProject as Record<string, unknown> | undefined;
-  if (configureProject && typeof configureProject.script === "string") {
-    paths.add(normalizeReferencedPath(configureProject.script));
+  const configureProject = manifest.configureProject;
+  if (configureProject && typeof configureProject === "object") {
+    const script = (configureProject as Record<string, unknown>).script;
+    if (typeof script === "string") paths.add(normalizeReferencedPath(script));
   }
 
   return paths;
@@ -238,11 +245,12 @@ function validateIgnoreField(manifest: Record<string, unknown>, errors: string[]
       continue;
     }
 
-    let matcher;
+    let matcher: Matcher;
     try {
       matcher = compileMatcher(entry);
-    } catch {
-      errors.push(`ignore[${i}] '${entry}' is not a valid pattern`);
+    } catch (err) {
+      const detail = err instanceof Error ? `: ${err.message}` : "";
+      errors.push(`ignore[${i}] '${entry}' is not a valid pattern${detail}`);
       continue;
     }
 
@@ -593,7 +601,7 @@ export function runHeuristics(
   tree: RepoTree
 ): string[] {
   const hints: string[] = [];
-  const components = (manifest.components ?? []) as Array<Record<string, unknown>>;
+  const components = (Array.isArray(manifest.components) ? manifest.components : []) as Array<Record<string, unknown>>;
 
   const referencedPaths = collectReferencedPaths(manifest);
   const ignorePatterns = Array.isArray(manifest.ignore)
