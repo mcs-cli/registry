@@ -90,12 +90,19 @@ export async function batchFetchRepoMetadata(
       body: JSON.stringify({ query }),
     });
 
-    if (!response.ok) continue;
+    // Don't silently skip on transport/protocol failure — a partial map gets
+    // misread downstream as "these repos are gone" and triggers a mass-prune.
+    if (!response.ok) {
+      throw new Error(`GitHub GraphQL batch HTTP ${response.status}`);
+    }
 
     const json = (await response.json()) as GraphQLResponse<
       Record<string, RawRepoData | null>
     >;
-    if (!json.data) continue;
+    if (!json.data) {
+      const msg = json.errors?.map((e) => e.message).join("; ") ?? "no data";
+      throw new Error(`GitHub GraphQL batch error: ${msg}`);
+    }
 
     batch.forEach((p, idx) => {
       const repo = json.data?.[`repo${idx}`];

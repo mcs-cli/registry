@@ -60,11 +60,21 @@ export async function handleReindex(env: Env, options?: { force?: boolean }): Pr
     repoUrls.push(pack.repoUrl);
   }
 
-  // Batch fetch metadata via GraphQL
+  // Abort before the prune step on any upstream failure: a partial/empty map
+  // would otherwise be interpreted as "every repo is gone" — the cascade that
+  // wiped index:all on 2026-05-05.
   console.log(
     `[reindex] Fetching metadata for ${repoUrls.length} repos via GraphQL`
   );
-  const metadataMap = await batchFetchRepoMetadata(repoUrls, env.GITHUB_TOKEN);
+  let metadataMap;
+  try {
+    metadataMap = await batchFetchRepoMetadata(repoUrls, env.GITHUB_TOKEN);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[reindex] Aborting — batch metadata fetch failed: ${msg}`);
+    result.errors.push(`batch-metadata-fetch-failed: ${msg}`);
+    return result;
+  }
   console.log(
     `[reindex] Got metadata for ${metadataMap.size}/${repoUrls.length} repos`
   );
