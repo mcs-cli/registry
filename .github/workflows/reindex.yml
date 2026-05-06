@@ -90,3 +90,9 @@ jobs:
           if [ "$invalid" != "0" ]; then
             echo "::warning::$invalid pack(s) have invalid manifests"
           fi
+
+          # Hard fail on errors so an aborted reindex doesn't pass as silent success.
+          if [ "$error_count" != "0" ]; then
+            echo "::error::Reindex returned $error_count error(s)"
+            exit 1
+          fi
