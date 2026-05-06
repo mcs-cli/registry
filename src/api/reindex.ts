@@ -15,6 +15,10 @@ export interface ReindexResult {
   unavailable: number;
   invalid: number;
   removed: number;
+  // Control-plane errors only (e.g. batch metadata fetch failed). Per-pack
+  // validation failures are tracked via `invalid` and persisted to
+  // `pack.validationErrors`; they must NOT be pushed here, or the workflow's
+  // `error_count != 0` hard-fail trips on routine bad manifests.
   errors: string[];
 }
 
@@ -110,7 +114,6 @@ export async function handleReindex(env: Env, options?: { force?: boolean }): Pr
       const parsed = parseGitHubUrl(pack.repoUrl);
       if (!parsed) {
         console.log(`[reindex] "${slug}" → error (invalid repo URL)`);
-        result.errors.push(`${slug}: invalid repo URL`);
         continue;
       }
 
@@ -137,7 +140,6 @@ export async function handleReindex(env: Env, options?: { force?: boolean }): Pr
         pack.indexedAt = new Date().toISOString();
         await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
         console.log(`[reindex] "${slug}" → invalid: ${validation.errors.join("; ")}`);
-        result.errors.push(`${slug}: ${validation.errors.join("; ")}`);
         result.invalid++;
         continue;
       }
@@ -153,7 +155,6 @@ export async function handleReindex(env: Env, options?: { force?: boolean }): Pr
         pack.indexedAt = new Date().toISOString();
         await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
         console.log(`[reindex] "${slug}" → invalid: missing files: ${fileValidation.errors.join("; ")}`);
-        result.errors.push(`${slug}: ${fileValidation.errors.join("; ")}`);
         result.invalid++;
         continue;
       }
