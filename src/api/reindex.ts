@@ -2,16 +2,18 @@ import type { Env, PackEntry, RepoMetadata } from "../types.js";
 import { batchFetchRepoMetadata, fetchRepoMetadata } from "../lib/github.js";
 import { reconcileIndex } from "../lib/packIndex.js";
 
-// Reindex owns repository metadata and the `unavailable` status only. Validity (`active` /
-// `invalid`, `warnings`, `validationErrors`) is written solely by the scheduled validation
-// (scripts/validate.ts) and by submit, so no two writers disagree about the same pack.
+// Reindex owns repository metadata and the `unavailable` status. Validity (`active` / `invalid`,
+// `warnings`, `validationErrors`) is written by the scheduled validation (scripts/validate.ts) and
+// by submit, so no two writers disagree about the same pack. The one exception: a pack that comes
+// back from `unavailable` gets its last verdict restored here (see applyMetadata).
 
 export interface ReindexResult {
   total: number;
   updated: number;
   unchanged: number;
   unavailable: number;
-  recovered: number;
+  // GitHub answered without saying whether the repository exists; the pack is left exactly as stored.
+  skipped: number;
   removed: number;
   // Control-plane errors only (e.g. batch metadata fetch failed); the workflow hard-fails on any.
   errors: string[];
@@ -23,7 +25,7 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
     updated: 0,
     unchanged: 0,
     unavailable: 0,
-    recovered: 0,
+    skipped: 0,
     removed: 0,
     errors: [],
   };
@@ -64,9 +66,9 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
   console.log(
     `[reindex] Fetching metadata for ${repoUrls.length} repos via GraphQL`
   );
-  let metadataMap;
+  let batch;
   try {
-    metadataMap = await batchFetchRepoMetadata(repoUrls, env.GITHUB_TOKEN);
+    batch = await batchFetchRepoMetadata(repoUrls, env.GITHUB_TOKEN);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[reindex] Aborting — batch metadata fetch failed: ${msg}`);
@@ -74,14 +76,19 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
     return result;
   }
   console.log(
-    `[reindex] Got metadata for ${metadataMap.size}/${repoUrls.length} repos`
+    `[reindex] Got metadata for ${batch.found.size}/${repoUrls.length} repos`
   );
 
   for (const [slug, pack] of packMap) {
-    const metadata = metadataMap.get(pack.repoUrl);
+    if (batch.unknown.has(pack.repoUrl)) {
+      console.log(`[reindex] "${slug}" → skipped (GitHub did not say whether the repo exists)`);
+      result.skipped++;
+      continue;
+    }
 
+    const metadata = batch.found.get(pack.repoUrl);
     if (!metadata) {
-      // Repo not found or inaccessible
+      // GitHub reported the repository NOT_FOUND
       if (pack.status !== "unavailable") {
         pack.status = "unavailable";
         pack.indexedAt = new Date().toISOString();
@@ -94,14 +101,13 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
       continue;
     }
 
-    const change = applyMetadata(pack, metadata);
-    console.log(`[reindex] "${slug}" → ${change}`);
-    if (change === "unchanged") {
+    if (!applyMetadata(pack, metadata)) {
       // Skipping the write keeps KV writes proportional to change (free tier: 1,000/day).
+      console.log(`[reindex] "${slug}" → unchanged`);
       result.unchanged++;
       continue;
     }
-    if (change === "recovered") result.recovered++;
+    console.log(`[reindex] "${slug}" → updated`);
     result.updated++;
     pack.indexedAt = new Date().toISOString();
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
@@ -121,19 +127,21 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
   }
 
   console.log(
-    `[reindex] Done — ${result.updated} updated, ${result.unchanged} unchanged, ${result.unavailable} unavailable, ${result.recovered} recovered, ${result.removed} removed, ${result.errors.length} errors`
+    `[reindex] Done — ${result.updated} updated, ${result.unchanged} unchanged, ${result.unavailable} unavailable, ${result.skipped} skipped, ${result.removed} removed, ${result.errors.length} errors`
   );
   return result;
 }
 
 /**
- * Copies fresh repository metadata onto the pack. A pack that was unavailable and is reachable
- * again shows its last verdict and loses its `deepValidatedAt`, so the next scheduled validation
- * re-checks it rather than trusting a verdict recorded before the repository went away.
+ * Copies fresh repository metadata onto the pack and reports whether anything changed. A pack that
+ * was unavailable and is reachable again shows its last verdict and loses its `deepValidatedAt`, so
+ * the next scheduled validation re-checks it rather than trusting a verdict recorded before the
+ * repository went away. Only reindexSinglePack can meet such a pack: the scheduled reindex walks
+ * index:all, which never lists an unavailable pack.
  */
-function applyMetadata(pack: PackEntry, metadata: RepoMetadata): "updated" | "unchanged" | "recovered" {
-  const recovered = pack.status === "unavailable";
+function applyMetadata(pack: PackEntry, metadata: RepoMetadata): boolean {
   const changed =
+    pack.status === "unavailable" ||
     pack.stargazerCount !== metadata.stargazerCount ||
     pack.defaultBranch !== metadata.defaultBranch ||
     pack.latestTag !== metadata.latestTag ||
@@ -144,33 +152,37 @@ function applyMetadata(pack: PackEntry, metadata: RepoMetadata): "updated" | "un
   pack.latestTag = metadata.latestTag;
   pack.pushedAt = metadata.pushedAt;
 
-  if (recovered) {
+  if (pack.status === "unavailable") {
     pack.status = pack.validationErrors?.length ? "invalid" : "active";
     pack.deepValidatedAt = undefined;
-    return "recovered";
   }
-  return changed ? "updated" : "unchanged";
+  return changed;
 }
 
 /** Background refresh for a stale pack view; metadata only, like the scheduled reindex. */
 export async function reindexSinglePack(slug: string, env: Env): Promise<void> {
   const raw = await env.PACKS.get(`pack:${slug}`);
   if (!raw) return;
-  const pack = JSON.parse(raw) as PackEntry;
+  const { repoUrl } = JSON.parse(raw) as PackEntry;
 
   let metadata: RepoMetadata | null;
   try {
-    metadata = await fetchRepoMetadata(pack.repoUrl, env.GITHUB_TOKEN);
+    metadata = await fetchRepoMetadata(repoUrl, env.GITHUB_TOKEN);
   } catch (err) {
     console.error(`[reindex] Single refresh of "${slug}" skipped: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
 
-  if (metadata) {
-    applyMetadata(pack, metadata);
-  } else {
-    pack.status = "unavailable";
-  }
+  // Re-read after the GitHub round trip and change only repository fields, so a verdict written
+  // meanwhile is kept. This narrows the race but cannot close it: KV reads can be up to ~60s stale.
+  const freshRaw = await env.PACKS.get(`pack:${slug}`);
+  if (!freshRaw) return;
+  const pack = JSON.parse(freshRaw) as PackEntry;
+
+  const changed = metadata ? applyMetadata(pack, metadata) : pack.status !== "unavailable";
+  if (!metadata) pack.status = "unavailable";
+  if (!changed) return;
+
   pack.indexedAt = new Date().toISOString();
   await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
   await reconcileIndex(env, pack);

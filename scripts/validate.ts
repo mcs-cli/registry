@@ -1,6 +1,7 @@
 /**
  * Validation of all registered tech packs — the only scheduled writer of each pack's
- * status (active/invalid), warnings and validationErrors. Runs in the Reindex & Validate
+ * status (active/invalid), warnings and validationErrors (reindex only restores the last verdict
+ * of a pack that comes back from unavailable). Runs in the Reindex & Validate
  * workflow right after the metadata reindex, so pushedAt and defaultBranch are fresh.
  *
  * Usage: npx tsx scripts/validate.ts
@@ -14,6 +15,7 @@ import { createHash } from "crypto";
 import { readdirSync, readFileSync } from "fs";
 import { evaluateRepo } from "../src/lib/packValidation.js";
 import type { ExtractedPackData } from "../src/types.js";
+import type { UpdatePackStatusRequest } from "../src/api/packs.js";
 import { GitHubApiError, parseGitHubUrl } from "../src/lib/github.js";
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN ?? "";
@@ -101,17 +103,7 @@ async function fetchAllPacks(): Promise<PackInfo[]> {
   }
 }
 
-interface UpdateStatusPayload {
-  slug: string;
-  status: "active" | "invalid";
-  warnings: string[];
-  validationErrors: string[];
-  deepValidatedAt: string;
-  validatorVersion: string;
-  packData?: ExtractedPackData;
-}
-
-async function updatePackStatus(payload: UpdateStatusPayload): Promise<boolean> {
+async function updatePackStatus(payload: UpdatePackStatusRequest): Promise<boolean> {
   if (!REINDEX_SECRET) {
     console.log(`  [dry-run] Would update ${payload.slug} → ${payload.status}`);
     return true;
@@ -274,7 +266,9 @@ async function main() {
 
   const reports: ValidationReport[] = [];
   const failures: Array<{ slug: string; message: string }> = [];
+  const writeFailures: string[] = [];
   let skippedCount = 0;
+  let aborted: unknown;
 
   for (const pack of packs) {
     process.stdout.write(`  ${pack.slug} ... `);
@@ -294,16 +288,19 @@ async function main() {
     try {
       report = await validatePack(pack);
     } catch (err) {
-      // A rate limit would fail every remaining pack the same way — stop and let the next run retry.
-      if (err instanceof GitHubApiError && err.isRateLimit) throw err;
+      // A rate limit would fail every remaining pack the same way — stop and let the next run retry,
+      // but still file issues for the packs already written invalid, or they would never get one.
+      if (err instanceof GitHubApiError && err.isRateLimit) {
+        console.log(`🛑 ABORTED: ${err.message}`);
+        aborted = err;
+        break;
+      }
       // Any other fetch failure says nothing about the pack, so its stored verdict stays as is.
       const message = err instanceof Error ? err.message : String(err);
       console.log(`⚠️  NOT VALIDATED: ${message}`);
       failures.push({ slug: pack.slug, message });
       continue;
     }
-    reports.push(report);
-
     const icon = report.newStatus === "active" ? "✅" : "❌";
     const extras = report.warnings.length > 0 ? ` (${report.warnings.length} warnings)` : "";
     console.log(`${icon} ${report.newStatus}${extras}`);
@@ -317,9 +314,13 @@ async function main() {
       validatorVersion: VALIDATOR_VERSION,
       packData: report.packData,
     });
+    // An unrecorded verdict is not a validation: no count, no issue.
     if (!updated) {
       console.log(`    ⚠️  Failed to update status for ${report.slug}`);
+      writeFailures.push(report.slug);
+      continue;
     }
+    reports.push(report);
   }
 
   // Summary
@@ -354,6 +355,7 @@ async function main() {
       `| Skipped (not pushed, or unavailable) | ${skippedCount} |`,
       `| Validated | ${reports.length} |`,
       `| Not validated (GitHub error) | ${failures.length} |`,
+      `| Status update failed | ${writeFailures.length} |`,
       `| Active | ${valid.length} |`,
       `| Invalid | ${invalid.length} |`,
       `| Status changed | ${changed.length} |`,
@@ -436,10 +438,16 @@ async function main() {
 
   for (const f of failures) console.log(`::warning::${f.slug} not validated: ${f.message}`);
 
-  // Exit with error if any status transitions to invalid
+  // A pack turning invalid is a routine outcome, announced by its issue; only failures of the run itself fail the job.
   const newlyInvalid = reports.filter((r) => r.statusChanged && r.newStatus === "invalid");
-  if (newlyInvalid.length > 0) {
-    console.log(`\n${newlyInvalid.length} pack(s) newly marked invalid`);
+  if (newlyInvalid.length > 0) console.log(`\n${newlyInvalid.length} pack(s) newly marked invalid`);
+
+  const controlPlaneFailures: string[] = [];
+  if (aborted) controlPlaneFailures.push(`run aborted: ${aborted instanceof Error ? aborted.message : String(aborted)}`);
+  if (writeFailures.length > 0) controlPlaneFailures.push(`status update failed for ${writeFailures.join(", ")}`);
+  if (reports.length === 0 && failures.length > 0) controlPlaneFailures.push("no pack could be validated");
+  if (controlPlaneFailures.length > 0) {
+    for (const f of controlPlaneFailures) console.log(`::error::${f}`);
     process.exit(1);
   }
 

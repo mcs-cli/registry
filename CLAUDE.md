@@ -13,6 +13,8 @@ npm run build:worker  # esbuild bundles _worker.ts → public/_worker.js (requir
 npm run typecheck     # tsc --noEmit
 npm run dev           # build:worker + wrangler pages dev (local KV is empty)
 npm run deploy        # build:worker + wrangler pages deploy
+npx tsx scripts/test-validator.ts  # validator + heuristics parity with mcs
+npx tsx scripts/test-reindex.ts    # KV writers and GitHub helpers (stubbed fetch, in-memory KV)
 ```
 
 CI auto-deploys on push to main via `.github/workflows/deploy.yml`.
@@ -66,7 +68,7 @@ All routing is manual string matching in `_worker.ts → handleApiRoute()`.
 ## Key Gotchas
 
 - **Ajv is banned** — Workers block `new Function()`. Validation is manual in `src/lib/validator.ts`. The JSON Schema file exists for documentation only.
-- **`validator.ts`, `glob.ts` and `builtinIgnore.ts` mirror mcs verbatim** — registry/CLI parity is the contract. `runHeuristics` follows `PackHeuristics.check` check for check, with the same severities and wording, and a pack is `invalid` exactly when `mcs pack validate` would exit non-zero. Findings name components and templates `<identifier>.<id>`, as mcs does after `normalized()`. The one deliberate exception is mcs's third-party-tap warning, which is CLI-only (see the comment on `checkThirdPartyTaps` in mcs) and must not be ported. The matcher must not gain `**` support and the built-in sets are exact strings (not globs). Any drift means `mcs pack validate` and the registry website disagree on the same pack.
+- **`validator.ts`, `glob.ts` and `builtinIgnore.ts` mirror mcs verbatim** — registry/CLI parity is the contract. `runHeuristics` follows `PackHeuristics.check` check for check, with the same severities and wording, and the file-reference checks follow the mcs loader, so heuristics and file checks give the verdict `mcs pack validate` gives. The structural layer (`validateTechpackYaml` vs `ExternalPackManifest.validate()`) is a known gap in both directions, tracked in #14. Findings name components and templates `<identifier>.<id>`, as mcs does after `normalized()`. The one deliberate exception is mcs's third-party-tap warning, which is CLI-only (see the comment on `checkThirdPartyTaps` in mcs) and must not be ported. The matcher must not gain `**` support and the built-in sets are exact strings (not globs). Any drift means `mcs pack validate` and the registry website disagree on the same pack.
 - **Known parity gap: symlinks.** mcs follows them on disk; the GitHub tree lists every symlink as a blob, so a root symlink to a directory (or a dangling one) can be reported differently. Submodules are treated as empty directories, as in mcs's `--depth 1` clone.
 - **`public/_worker.js` is gitignored** — must be built before deploy. If API routes return HTML instead of JSON, the Worker wasn't bundled.
 - **esbuild flags matter** — `--platform=browser` (not `neutral`) and `--conditions=workerd,worker,browser` are required.
@@ -80,17 +82,17 @@ Each pack field has exactly one scheduled writer, so no job overwrites another's
 
 | Fields | Written by |
 |--------|-----------|
-| `stargazerCount`, `defaultBranch`, `latestTag`, `pushedAt`, `unavailable` status | `handleReindex` / `reindexSinglePack` (Worker) |
+| `stargazerCount`, `defaultBranch`, `latestTag`, `pushedAt`, `unavailable` status — plus restoring the last verdict when an unavailable pack comes back | `handleReindex` / `reindexSinglePack` (Worker) |
 | `active`/`invalid` status, `warnings`, `validationErrors`, `deepValidatedAt`, and the manifest-derived `identifier`, `displayName`, `description`, `author`, `components`, `keywords` | `scripts/validate.ts` (Actions, via `update-status`'s `packData`) and `handleSubmit`, both via `evaluatePack` |
 
 - **Scheduled**: `.github/workflows/reindex.yml` runs every 6h — `POST /api/reindex` (metadata), then `scripts/validate.ts` (verdicts + issue filing for newly invalid packs). `force` revalidates every pack.
 - **On-demand**: `handleGetPack` fires a background metadata-only `reindexSinglePack` if data is >1h stale.
 - **Skip logic**: validation re-checks a pack when it was pushed since `deepValidatedAt` (or has none), or when its `validatorVersion` differs from the current one — a digest of `src/lib/*.ts` and the schema computed by `scripts/validate.ts`, so any validator change re-checks every pack on the next run without `force`. Submit leaves `validatorVersion` unset (the Worker cannot read its sources), so a new pack is re-checked once.
 - **Dry run**: without `REINDEX_SECRET`, `scripts/validate.ts` writes nothing and files no issues — safe to run locally with `GITHUB_TOKEN=$(gh auth token)`.
-- **Transient GitHub failures never become verdicts**: `fetchTechpackYaml` returns null only on 404, `fetchRepoTree` only on truncation, and a repo is "gone" only when GraphQL says `NOT_FOUND`; anything else throws and the stored state is kept.
-- **Index membership**: `reconcileIndex` (`src/lib/packIndex.ts`) is the one place `index:all` gains or loses a single pack; call it after writing a pack whose status may have changed.
+- **Transient GitHub failures never become verdicts**: `fetchTechpackYaml` returns null only on 404, `fetchRepoTree` only on truncation, and a repo is "gone" only when GraphQL says `NOT_FOUND` for its alias. `batchFetchRepoMetadata` sorts repos into found / `notFound` / `unknown`: an error tied to one alias (e.g. FORBIDDEN for a blocked repo) makes that pack `unknown`, left untouched and counted as `skipped`; an error for the whole request throws and the run aborts before pruning.
+- **Index membership**: `reconcileIndex` (`src/lib/packIndex.ts`) adds or removes a single pack; call it after writing a pack whose status may have changed. `handleReindex` prunes `unavailable` packs in bulk by writing `index:all` directly.
 - **Batch GraphQL**: Up to 50 repos per GitHub API call
-- **Pack statuses**: `active | unavailable | invalid` — `unavailable` packs are pruned from `index:all` (KV entry kept, filtered from listing), and `update-status` refuses to revive one. A pack that becomes reachable again gets its last verdict back (`invalid` if it has `validationErrors`, else `active`) with `deepValidatedAt` cleared so the next validation re-checks it. `invalid` packs stay in `index:all` and render at the bottom of the grid with a red banner; the pack modal exposes a "Report issue" button that builds a prefilled GitHub issue URL.
+- **Pack statuses**: `active | unavailable | invalid` — `unavailable` packs are pruned from `index:all` (KV entry kept, filtered from listing), and `update-status` refuses to revive one. The scheduled reindex never sees an unlisted pack, so one only comes back through re-submission or a visit to its direct URL (`reindexSinglePack`); scheduled recovery is #15. A pack that comes back gets its last verdict (`invalid` if it has `validationErrors`, else `active`) with `deepValidatedAt` cleared so the next validation re-checks it. `invalid` packs stay in `index:all` and render at the bottom of the grid with a red banner; the pack modal exposes a "Report issue" button that builds a prefilled GitHub issue URL.
 
 ## Secrets
 

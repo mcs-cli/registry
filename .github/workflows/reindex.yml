@@ -56,7 +56,7 @@ jobs:
           updated=$(echo "$body" | jq -r '.updated // 0')
           unchanged=$(echo "$body" | jq -r '.unchanged // 0')
           unavailable=$(echo "$body" | jq -r '.unavailable // 0')
-          recovered=$(echo "$body" | jq -r '.recovered // 0')
+          skipped=$(echo "$body" | jq -r '.skipped // 0')
           removed=$(echo "$body" | jq -r '.removed // 0')
           errors=$(echo "$body" | jq -r '.errors // []')
           error_count=$(echo "$errors" | jq -r 'length')
@@ -78,7 +78,7 @@ jobs:
           | Updated | $updated |
           | Unchanged | $unchanged |
           | Unavailable | $unavailable |
-          | Recovered | $recovered |
+          | Skipped (GitHub gave no answer) | $skipped |
           | Pruned (unavailable) | $removed |
           | Errors | $error_count |
           EOF
@@ -91,9 +91,12 @@ jobs:
             echo "::warning::Reindex completed with $error_count errors"
           fi
 
-          # Add warnings for unavailable
+          # Add warnings for unavailable / skipped
           if [ "$unavailable" != "0" ]; then
             echo "::warning::$unavailable pack(s) are unavailable"
+          fi
+          if [ "$skipped" != "0" ]; then
+            echo "::warning::$skipped pack(s) skipped: GitHub did not say whether the repo exists"
           fi
 
           # Hard fail on errors so an aborted reindex doesn't pass as silent success.

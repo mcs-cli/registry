@@ -15,9 +15,10 @@ The public registry for [MCS](https://mcs-cli.dev) tech packs. Browse, search, a
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/packs` | List/search packs (`?q=`, `?sort=stars\|recent`, `?limit=`, `?offset=`) |
-| `GET` | `/api/packs/:identifier` | Get a single pack |
+| `GET` | `/api/packs/github/:owner/:repo` | Get a single pack |
 | `POST` | `/api/submit` | Submit a new pack |
-| `POST` | `/api/reindex` | Refresh repository metadata |
+| `POST` | `/api/reindex` | Refresh repository metadata (auth) |
+| `POST` | `/api/packs/update-status` | Record a pack's validation verdict (auth, used by `scripts/validate.ts`) |
 
 ## Local Development
 

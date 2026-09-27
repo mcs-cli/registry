@@ -150,6 +150,7 @@ console.log("\n=== FNM_PATHNAME bracket-class semantics ===");
   const hints = messagesOf(m, t);
   // `foo[!a]` matches `foob` (b is not a) — silenced.
   eq("[!a] matches foob (negated class)", hints.some((h) => h.includes("foob") && !h.includes("foo/")), false);
+  eq("[!a] does not match across / — foo/x still reported", hints.some((h) => h.startsWith("foo/x ")), true);
 }
 
 console.log("\n=== Backslash escape (mcs FNM_PATHNAME, no FNM_NOESCAPE) ===");
@@ -404,16 +405,17 @@ const noTree = tree([]);
 
 console.log("\n=== evaluatePack: verdicts match mcs pack validate ===");
 
+const verdictOf = ({ status, errors, warnings }: ReturnType<typeof evaluatePack>) => ({ status, errors, warnings });
+
 const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
   yamlOf(baseManifest({ components: [{ id: "s", description: "x", skill: { source, destination: "s" } }], ...extra }));
 
 {
   const t = tree(["skills/s/SKILL.md", "skills/s/LICENSE", "skills/s/README.md"], ["skills", "skills/s"]);
-  eq("LICENSE and README inside a skill directory are not reported", evaluatePack(skillPack("skills/s"), t), {
+  eq("LICENSE and README inside a skill directory are not reported", verdictOf(evaluatePack(skillPack("skills/s"), t)), {
     status: "active",
     errors: [],
     warnings: [],
-    packData: evaluatePack(skillPack("skills/s"), t).packData,
   });
 }
 {
@@ -425,11 +427,10 @@ const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
 }
 {
   const r = evaluatePack(skillPack("skills/missing", { ignore: ["docs/"] }), tree(["docs/x.md", "stray.txt"], ["docs"]));
-  eq("missing source stops before heuristics", r, {
+  eq("missing source stops before heuristics", verdictOf(r), {
     status: "invalid",
     errors: ["Component 's' source 'skills/missing' not found in repository"],
     warnings: [],
-    packData: r.packData,
   });
 }
 {
@@ -475,7 +476,7 @@ console.log("\n=== GitHubApiError: only an exhausted token aborts a run ===");
   eq("429 is", err(429), true);
 }
 
-console.log("\n=== Built-in list drift (parity contract with mcs) ===");
+console.log("\n=== Built-in list drift (exact sets as of mcs 2026.9.27, PackHeuristics.swift) ===");
 
 const REQUIRED_IGNORED_DIRS = [".git", ".github", ".gitlab", ".vscode", "node_modules", "__pycache__", ".build"];
 const REQUIRED_INFRA_FILES = [
@@ -495,8 +496,8 @@ const REQUIRED_INFRA_FILES = [
   "Dockerfile",
   ".dockerignore",
 ];
-for (const d of REQUIRED_IGNORED_DIRS) eq(`BUILTIN_IGNORED_DIRS contains ${d}`, BUILTIN_IGNORED_DIRS.has(d), true);
-for (const f of REQUIRED_INFRA_FILES) eq(`BUILTIN_INFRASTRUCTURE_FILES contains ${f}`, BUILTIN_INFRASTRUCTURE_FILES.has(f), true);
+eq("BUILTIN_IGNORED_DIRS is exactly mcs ignoredDirectories", [...BUILTIN_IGNORED_DIRS].sort(), [...REQUIRED_IGNORED_DIRS].sort());
+eq("BUILTIN_INFRASTRUCTURE_FILES is exactly mcs infrastructureFiles", [...BUILTIN_INFRASTRUCTURE_FILES].sort(), [...REQUIRED_INFRA_FILES].sort());
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail > 0 ? 1 : 0);

@@ -32,24 +32,37 @@ export function parseGitHubUrl(url: string): { owner: string; repo: string } | n
   return { owner: match[1], repo: match[2] };
 }
 
+/** Null when GitHub reports the repository NOT_FOUND; any answer that says nothing about it throws. */
 export async function fetchRepoMetadata(
   repoUrl: string,
   token: string
 ): Promise<RepoMetadata | null> {
-  const results = await batchFetchRepoMetadata([repoUrl], token);
-  return results.get(repoUrl) ?? null;
+  const { found, notFound } = await batchFetchRepoMetadata([repoUrl], token);
+  if (notFound.has(repoUrl)) return null;
+  const metadata = found.get(repoUrl);
+  if (!metadata) throw new Error(`GitHub GraphQL could not resolve ${repoUrl}`);
+  return metadata;
+}
+
+export interface BatchMetadata {
+  found: Map<string, RepoMetadata>;
+  // Only this set may mark a pack unavailable.
+  notFound: Set<string>;
+  // GitHub answered for this repository but not about its existence (e.g. FORBIDDEN for a blocked repo).
+  unknown: Set<string>;
 }
 
 /**
- * Metadata for every repository that exists; a missing entry means GitHub reported it NOT_FOUND.
- * Any other failure throws for the whole batch — a partial map would be misread downstream as
- * "these repos are gone" and prune live packs (the cascade that wiped index:all on 2026-05-05).
+ * Sorts every repository into found / NOT_FOUND / unknown. An error tied to one alias stays with
+ * that repository, so one blocked repo cannot stall every reindex; an error for the whole request
+ * throws, because a partial answer would be misread as "these repos are gone" and prune live packs
+ * (the cascade that wiped index:all on 2026-05-05).
  */
 export async function batchFetchRepoMetadata(
   repoUrls: string[],
   token: string
-): Promise<Map<string, RepoMetadata>> {
-  const results = new Map<string, RepoMetadata>();
+): Promise<BatchMetadata> {
+  const results: BatchMetadata = { found: new Map(), notFound: new Set(), unknown: new Set() };
   const parsed = repoUrls
     .map((url) => ({ url, ...parseGitHubUrl(url) }))
     .filter(
@@ -80,14 +93,23 @@ export async function batchFetchRepoMetadata(
     if (!response.ok) throw new GitHubApiError(response, "graphql");
 
     const json = (await response.json()) as GraphQLResponse<Record<string, RawRepoData | null>>;
-    const failure = json.errors?.find((e) => e.type !== "NOT_FOUND");
-    if (failure || !json.data) {
-      throw new Error(`GitHub GraphQL batch error: ${failure?.message ?? "no data"}`);
+    const aliasErrors = new Map<string, GraphQLError>();
+    for (const error of json.errors ?? []) {
+      const alias = error.path?.[0];
+      if (typeof alias !== "string" || !/^repo\d+$/.test(alias)) {
+        throw new Error(`GitHub GraphQL batch error: ${error.type ?? "unknown"}: ${error.message}`);
+      }
+      aliasErrors.set(alias, error);
     }
+    if (!json.data) throw new Error("GitHub GraphQL batch error: no data");
 
     batch.forEach((p, idx) => {
-      const repo = json.data?.[`repo${idx}`];
-      if (repo) results.set(p.url, mapRepoData(p.owner, p.repo, repo));
+      const alias = `repo${idx}`;
+      const repo = json.data?.[alias];
+      const error = aliasErrors.get(alias);
+      if (repo) results.found.set(p.url, mapRepoData(p.owner, p.repo, repo));
+      else if (!error || error.type === "NOT_FOUND") results.notFound.add(p.url);
+      else results.unknown.add(p.url);
     });
   }
 
@@ -172,9 +194,15 @@ interface GitTreeResponse {
   truncated: boolean;
 }
 
+interface GraphQLError {
+  message: string;
+  type?: string;
+  path?: Array<string | number>;
+}
+
 interface GraphQLResponse<T> {
   data?: T;
-  errors?: Array<{ message: string; type?: string }>;
+  errors?: GraphQLError[];
 }
 
 function mapRepoData(
