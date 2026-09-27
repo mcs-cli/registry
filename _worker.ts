@@ -1,16 +1,8 @@
 import type { Env, PackEntry } from "./src/types.js";
-import { EMPTY_COMPONENT_COUNTS } from "./src/types.js";
 import { injectPackOgTags } from "./src/lib/og.js";
 import { handleListPacks, handleGetPack, handleUpdatePackStatus, jsonResponse } from "./src/api/packs.js";
 import { handleSubmit } from "./src/api/submit.js";
 import { handleReindex } from "./src/api/reindex.js";
-import {
-  fetchRepoMetadata,
-  fetchTechpackYaml,
-  parseGitHubUrl,
-} from "./src/lib/github.js";
-import { validateTechpackYaml } from "./src/lib/validator.js";
-import { validatePackFiles } from "./src/lib/file-validation.js";
 
 export default {
   async fetch(
@@ -94,16 +86,14 @@ async function handleApiRoute(
     return handleSubmit(request, env);
   }
 
-  // POST /api/reindex (manual trigger — for seeding and scheduled reindex via GitHub Actions)
+  // POST /api/reindex (metadata refresh — called by the scheduled Reindex & Validate workflow)
   if (path === "/api/reindex" && request.method === "POST") {
     const authHeader = request.headers.get("Authorization");
     if (!authHeader || authHeader !== `Bearer ${env.REINDEX_SECRET}`) {
       return jsonResponse({ error: "Unauthorized" }, 401);
     }
     try {
-      await seedFromTechpacksJson(env);
-      const force = url.searchParams.get("force") === "true";
-      const result = await handleReindex(env, { force });
+      const result = await handleReindex(env);
       return jsonResponse({ message: "Reindex complete", ...result });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
@@ -122,97 +112,4 @@ async function handleApiRoute(
   }
 
   return jsonResponse({ error: "Not found" }, 404);
-}
-
-async function seedFromTechpacksJson(env: Env): Promise<void> {
-  const response = await fetch(
-    "https://raw.githubusercontent.com/mcs-cli/registry/main/techpacks.json",
-    { headers: { "User-Agent": "mcs-registry" } }
-  );
-
-  if (!response.ok) return;
-
-  const urls = (await response.json()) as string[];
-  const slugs: string[] = [];
-
-  for (const repoUrl of urls) {
-    const metadata = await fetchRepoMetadata(repoUrl, env.GITHUB_TOKEN);
-    if (!metadata) continue;
-
-    const parsed = parseGitHubUrl(repoUrl);
-    if (!parsed) continue;
-
-    const yamlContent = await fetchTechpackYaml(
-      parsed.owner,
-      parsed.repo,
-      metadata.defaultBranch,
-      env.GITHUB_TOKEN
-    );
-    if (!yamlContent) continue;
-
-    const validation = validateTechpackYaml(yamlContent);
-    const slug = `github/${parsed.owner}/${parsed.repo}`;
-    const canonicalUrl = `https://github.com/${parsed.owner}/${parsed.repo}`;
-
-    if (!validation.valid || !validation.packData) {
-      // Store as invalid instead of silently skipping
-      const invalidPack: PackEntry = {
-        slug,
-        identifier: "",
-        displayName: "",
-        description: "",
-        author: null,
-        repoUrl: canonicalUrl,
-        defaultBranch: metadata.defaultBranch,
-        latestTag: metadata.latestTag,
-        stargazerCount: metadata.stargazerCount,
-        pushedAt: metadata.pushedAt,
-        components: EMPTY_COMPONENT_COUNTS,
-        keywords: [],
-        status: "invalid",
-        indexedAt: new Date().toISOString(),
-        validationErrors: validation.errors,
-      };
-      await env.PACKS.put(`pack:${slug}`, JSON.stringify(invalidPack));
-      continue;
-    }
-
-    // File-existence validation
-    const fileValidation = await validatePackFiles(
-      parsed.owner, parsed.repo, metadata.defaultBranch, env.GITHUB_TOKEN, validation.manifest
-    );
-    const fileErrors = fileValidation?.errors.length ? fileValidation.errors : undefined;
-    const fileWarnings = fileValidation?.warnings.length ? fileValidation.warnings : undefined;
-
-    const isActive = !fileErrors;
-    const pack: PackEntry = {
-      slug,
-      identifier: validation.packData.identifier,
-      displayName: validation.packData.displayName,
-      description: validation.packData.description,
-      author: validation.packData.author,
-      repoUrl: canonicalUrl,
-      defaultBranch: metadata.defaultBranch,
-      latestTag: metadata.latestTag,
-      stargazerCount: metadata.stargazerCount,
-      pushedAt: metadata.pushedAt,
-      components: validation.packData.components,
-      keywords: validation.packData.keywords,
-      status: isActive ? "active" : "invalid",
-      indexedAt: new Date().toISOString(),
-      warnings: fileWarnings,
-      validationErrors: fileErrors,
-    };
-
-    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-    if (isActive) {
-      slugs.push(slug);
-    }
-  }
-
-  // Merge with existing index
-  const existingRaw = await env.PACKS.get("index:all");
-  const existing: string[] = existingRaw ? JSON.parse(existingRaw) : [];
-  const merged = [...new Set([...existing, ...slugs])].sort();
-  await env.PACKS.put("index:all", JSON.stringify(merged));
 }

@@ -17,8 +17,6 @@ const TECHPACK_MANIFEST_FILENAME = "techpack.yaml";
 
 const SOURCE_SHORTHAND_KEYS = ["hook", "command", "skill", "agent"] as const;
 
-const UNREFERENCED_HINT_CAP = 50;
-
 // Derive validation constants from the JSON schema (single source of truth)
 const defs = schema.definitions;
 
@@ -93,12 +91,11 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
     return {
       valid: false,
       errors: [`YAML parse error: ${e instanceof Error ? e.message : String(e)}`],
-      warnings: [],
     };
   }
 
   if (!parsed || typeof parsed !== "object") {
-    return { valid: false, errors: ["techpack.yaml must be a YAML object"], warnings: [] };
+    return { valid: false, errors: ["techpack.yaml must be a YAML object"] };
   }
 
   const manifest = parsed as Record<string, unknown>;
@@ -188,25 +185,16 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
   validateIgnoreField(manifest, errors);
 
   if (errors.length > 0) {
-    return { valid: false, errors, warnings: [] };
+    return { valid: false, errors };
   }
 
   // Step 4: Extract pack data for indexing
   const packData = extractPackData(manifest, components);
-  return { valid: true, errors: [], warnings: [], packData, manifest };
+  return { valid: true, errors: [], packData, manifest };
 }
 
 function normalizeReferencedPath(path: string): string {
   return path.replace(/^\.\//, "").trim();
-}
-
-function hasReferencedAncestor(file: string, referenced: ReadonlySet<string>): boolean {
-  let i = file.lastIndexOf("/");
-  while (i > 0) {
-    if (referenced.has(file.slice(0, i))) return true;
-    i = file.lastIndexOf("/", i - 1);
-  }
-  return false;
 }
 
 export function collectReferencedPaths(manifest: Record<string, unknown>): ReadonlySet<string> {
@@ -295,86 +283,40 @@ function validateIgnoreField(manifest: Record<string, unknown>, errors: string[]
   }
 }
 
-export function validateFileReferences(
-  manifest: Record<string, unknown>,
-  repoTree: RepoTree
-): { errors: string[]; warnings: string[] } {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-
+// Mirrors ExternalPackLoader.findMissingReferencedFiles: a missing template, configure script or
+// copied source fails `mcs pack validate` before any heuristic runs.
+export function validateFileReferences(manifest: Record<string, unknown>, repoTree: RepoTree): string[] {
   const pathsToCheck: Array<{ path: string; label: string }> = [];
 
-  // Extract source paths from components
-  const components = (manifest.components ?? []) as Array<Record<string, unknown>>;
-  for (const comp of components) {
-    const id = (comp.id as string) ?? "unknown";
-
-    for (const key of SOURCE_SHORTHAND_KEYS) {
-      const shorthand = comp[key] as Record<string, unknown> | undefined;
-      if (shorthand && typeof shorthand === "object" && typeof shorthand.source === "string") {
-        pathsToCheck.push({ path: shorthand.source, label: `Component '${id}' ${key} source` });
-      }
-    }
-
-    // Shorthand: settingsFile (plain string)
-    if (typeof comp.settingsFile === "string") {
-      pathsToCheck.push({ path: comp.settingsFile, label: `Component '${id}' settingsFile` });
-    }
-
-    // Verbose: installAction with source field
-    const action = comp.installAction as Record<string, unknown> | undefined;
-    if (action && typeof action === "object" && typeof action.source === "string") {
-      pathsToCheck.push({ path: action.source, label: `Component '${id}' installAction source` });
-    }
-  }
-
-  // Extract contentFile from templates
-  const templates = (manifest.templates ?? []) as Array<Record<string, unknown>>;
-  for (const template of templates) {
+  for (const template of records(manifest.templates)) {
     if (typeof template.contentFile === "string") {
       const sectionId = (template.sectionIdentifier as string) ?? "unknown";
       pathsToCheck.push({ path: template.contentFile, label: `Template '${sectionId}' contentFile` });
     }
   }
 
-  // Extract configureProject.script
-  const configureProject = manifest.configureProject as Record<string, unknown> | undefined;
-  if (configureProject && typeof configureProject === "object" && typeof configureProject.script === "string") {
-    pathsToCheck.push({ path: configureProject.script, label: "configureProject script" });
+  const configureProject = manifest.configureProject;
+  if (configureProject && typeof configureProject === "object") {
+    const script = (configureProject as Record<string, unknown>).script;
+    if (typeof script === "string") pathsToCheck.push({ path: script, label: "configureProject script" });
   }
 
-  for (const { path: rawPath, label } of pathsToCheck) {
-    const normalized = normalizeReferencedPath(rawPath);
-
-    // source: "." or "./" — repo root, always exists but almost always wrong
-    if (normalized === "" || normalized === ".") {
-      warnings.push(
-        `${label} '${rawPath}' points to the repository root — this will copy unintended files (LICENSE, README.md, techpack.yaml)`
-      );
-      continue;
-    }
-
-    const inFiles = repoTree.files.has(normalized);
-    const inDirs = repoTree.directories.has(normalized);
-
-    if (!inFiles && !inDirs) {
-      errors.push(`${label} '${normalized}' not found in repository`);
-      continue;
-    }
-
-    // Warn if a directory source contains repo boilerplate
-    if (inDirs) {
-      const boilerplate = ["techpack.yaml", "LICENSE", "README.md"];
-      const found = boilerplate.filter((f) => repoTree.files.has(`${normalized}/${f}`));
-      if (found.length > 0) {
-        warnings.push(
-          `${label} directory '${normalized}' contains ${found.join(", ")} — may be copying unintended files`
-        );
-      }
+  for (const comp of records(manifest.components)) {
+    const action = resolveInstallAction(comp);
+    if (action?.kind === "copy" && action.source !== undefined) {
+      pathsToCheck.push({ path: action.source, label: `Component '${comp.id}' source` });
     }
   }
 
-  return { errors, warnings };
+  return pathsToCheck
+    .filter(({ path }) => !existsInTree(path, repoTree))
+    .map(({ path, label }) => `${label} '${normalizeReferencedPath(path)}' not found in repository`);
+}
+
+// The empty path is the pack root, which always exists — as it does for mcs's fileExists.
+function existsInTree(rawPath: string, tree: RepoTree): boolean {
+  const path = normalizeReferencedPath(rawPath);
+  return isPackRoot(path) || tree.files.has(path) || tree.directories.has(path);
 }
 
 function validateStructure(manifest: Record<string, unknown>, errors: string[]): void {
@@ -427,13 +369,6 @@ function validateStructure(manifest: Record<string, unknown>, errors: string[]):
   // templates must be an array
   if (manifest.templates !== undefined && !Array.isArray(manifest.templates)) {
     errors.push("'templates' must be an array");
-  }
-
-  // A techpack must have at least one component or template
-  const componentsCount = Array.isArray(manifest.components) ? manifest.components.length : 0;
-  const templatesCount = Array.isArray(manifest.templates) ? manifest.templates.length : 0;
-  if (componentsCount === 0 && templatesCount === 0) {
-    errors.push("techpack must contain at least one component or template");
   }
 
   // configureProject must be an object with a script field if present
@@ -629,103 +564,166 @@ function extractKeywords(
   return [...words];
 }
 
-export function runHeuristics(
-  manifest: Record<string, unknown>,
-  tree: RepoTree
-): string[] {
-  const hints: string[] = [];
-  const components = (Array.isArray(manifest.components) ? manifest.components : []) as Array<Record<string, unknown>>;
+export type Severity = "error" | "warning";
 
-  const referencedPaths = collectReferencedPaths(manifest);
-  const ignorePatterns = Array.isArray(manifest.ignore)
-    ? manifest.ignore.filter((p): p is string => typeof p === "string")
-    : [];
-  let ignoreMatcher: (path: string) => boolean;
-  try {
-    ignoreMatcher = compileAnyMatcher(ignorePatterns);
-  } catch {
-    ignoreMatcher = () => false;
-  }
+export interface Finding {
+  severity: Severity;
+  message: string;
+}
 
-  const topLevelDirs = new Set<string>();
-  for (const dir of tree.directories) {
-    if (!dir.includes("/")) topLevelDirs.add(dir);
-  }
+const error = (message: string): Finding => ({ severity: "error", message });
+const warning = (message: string): Finding => ({ severity: "warning", message });
 
-  const filesByTopDir = new Map<string, string[]>();
-  const rootFiles: string[] = [];
-  for (const file of tree.files) {
-    const slash = file.indexOf("/");
-    if (slash < 0) {
-      rootFiles.push(file);
-      continue;
-    }
-    const top = file.slice(0, slash);
-    if (!topLevelDirs.has(top)) continue;
-    let bucket = filesByTopDir.get(top);
-    if (!bucket) {
-      bucket = [];
-      filesByTopDir.set(top, bucket);
-    }
-    bucket.push(file);
-  }
+const IGNORE_HINT =
+  "Add intentional non-material paths (docs/, examples/, assets) to the `ignore:` field in techpack.yaml to silence these warnings.";
 
-  let capped = false;
-  const pushHint = (hint: string): void => {
-    if (capped) return;
-    if (hints.length >= UNREFERENCED_HINT_CAP) {
-      hints.push(`… additional unreferenced files truncated (cap: ${UNREFERENCED_HINT_CAP})`);
-      capped = true;
-      return;
-    }
-    hints.push(hint);
-  };
-
-  // Mirrors mcs PackHeuristics.checkUnreferencedFiles.
-  outer: for (const [dir, files] of filesByTopDir) {
-    if (BUILTIN_IGNORED_DIRS.has(dir)) continue;
-    if (ignoreMatcher(dir)) continue;
-
-    for (const file of files) {
-      if (capped) break outer;
-      if (referencedPaths.has(file)) continue;
-      if (hasReferencedAncestor(file, referencedPaths)) continue;
-      if (ignoreMatcher(file)) continue;
-      pushHint(`Unreferenced file '${file}' in ${dir}/ directory — may be unwired content`);
-    }
-  }
-
-  // Mirrors mcs PackHeuristics.checkRootLevelContentFiles.
-  for (const file of rootFiles) {
-    if (capped) break;
-    if (BUILTIN_INFRASTRUCTURE_FILES.has(file)) continue;
-    if (referencedPaths.has(file)) continue;
-    if (ignoreMatcher(file)) continue;
-    pushHint(`Unreferenced file '${file}' at repository root — not referenced by any component`);
-  }
-
-  // Mirrors the rest of PackHeuristics.check, in its order; checkPythonModulePaths is not ported.
+// Mirrors mcs PackHeuristics.check (Sources/mcs/ExternalPack/PackHeuristics.swift), check for check
+// and in its order. checkThirdPartyTaps is left out on purpose: it is CLI-only advice, and here it
+// would flag legitimate tap packs forever and file a validation issue that `ignore:` cannot silence.
+export function runHeuristics(rawManifest: Record<string, unknown>, tree: RepoTree): Finding[] {
+  const manifest = normalizedManifest(rawManifest);
+  const components = records(manifest.components);
   const resolved = components.map(resolveComponent);
   const brewPackages = collectBrewPackages(resolved);
   const doctorChecks = allDoctorChecks(manifest);
-  hints.push(
-    ...checkMCPDependencyGaps(resolved, brewPackages),
-    ...checkThirdPartyTaps(resolved),
-    ...checkDoctorCheckScopeUsage(doctorChecks),
-    ...checkDoctorCheckMatcherUsage(doctorChecks),
-    ...checkAmbiguousHookExtensions(resolved),
-    ...checkUninstalledHookRuntimes(resolved, brewPackages),
-    ...checkHookDoctorCheckInterpreters(manifest, resolved),
-    ...checkDeprecatedKeys(manifest, components),
-  );
+  const unreferenced = checkUnreferencedPaths(manifest, tree);
 
-  return hints;
+  const findings: Finding[] = [
+    ...checkEmptyPack(manifest),
+    ...checkRootSourceCopy(resolved),
+    ...checkSettingsFileSources(resolved, tree),
+    ...unreferenced,
+    ...checkMCPDependencyGaps(resolved, brewPackages).map(warning),
+    ...checkPythonModulePaths(resolved, tree),
+    ...checkDoctorCheckScopeUsage(doctorChecks).map(warning),
+    ...checkDoctorCheckMatcherUsage(doctorChecks).map(warning),
+    ...checkAmbiguousHookExtensions(resolved).map(warning),
+    ...checkUninstalledHookRuntimes(resolved, brewPackages).map(warning),
+    ...checkHookDoctorCheckInterpreters(manifest, resolved).map(warning),
+    ...checkDeprecatedKeys(manifest, components).map(warning),
+  ];
+  if (unreferenced.length > 0) findings.push(warning(IGNORE_HINT));
+  return findings;
+}
+
+// Mirrors ExternalPackManifest.normalized(): mcs checks the pack with every component and template
+// id prefixed by the pack identifier, so its findings name `<identifier>.<id>`.
+function normalizedManifest(manifest: Record<string, unknown>): Record<string, unknown> {
+  const prefix = `${manifest.identifier}.`;
+  const withPrefix = (key: string) => (entry: Record<string, unknown>) =>
+    typeof entry[key] === "string" ? { ...entry, [key]: prefix + entry[key] } : entry;
+  return {
+    ...manifest,
+    components: records(manifest.components).map(withPrefix("id")),
+    templates: records(manifest.templates).map(withPrefix("sectionIdentifier")),
+  };
+}
+
+function checkEmptyPack(manifest: Record<string, unknown>): Finding[] {
+  const empty = (value: unknown) => !Array.isArray(value) || value.length === 0;
+  if (empty(manifest.components) && empty(manifest.templates) && manifest.configureProject == null) {
+    return [error("Pack has no components, templates, or configure script — nothing to install")];
+  }
+  return [];
+}
+
+function checkRootSourceCopy(resolved: ResolvedComponent[]): Finding[] {
+  return resolved
+    .filter(({ action }) => action?.kind === "copy" && action.source !== undefined && isPackRoot(action.source))
+    .map(({ comp }) => error(
+      `Component '${comp.id}' uses source '.' which copies the entire pack root (including techpack.yaml, LICENSE, README)`
+    ));
+}
+
+function isPackRoot(rawPath: string): boolean {
+  const path = normalizeReferencedPath(rawPath);
+  return path === "" || path === ".";
+}
+
+function checkSettingsFileSources(resolved: ResolvedComponent[], tree: RepoTree): Finding[] {
+  return resolved.flatMap(({ comp, action }) =>
+    action?.kind === "settingsFile" && !existsInTree(action.source, tree)
+      ? [error(`Component '${comp.id}' references settings file '${action.source}' which does not exist`)]
+      : []
+  );
+}
+
+const isHidden = (name: string) => name.startsWith(".");
+
+// Every directory's direct children, as FileManager.contentsOfDirectory(.skipsHiddenFiles) lists
+// them, in one pass over the tree — only the root and its direct subdirectories are ever read.
+function listShallowChildren(tree: RepoTree): Map<string, string[]> {
+  const children = new Map<string, string[]>();
+  for (const path of [...tree.files, ...tree.directories]) {
+    const parts = path.split("/");
+    if (parts.length > 2 || isHidden(parts[parts.length - 1])) continue;
+    const parent = parts.length === 1 ? "" : parts[0];
+    let bucket = children.get(parent);
+    if (!bucket) children.set(parent, (bucket = []));
+    bucket.push(path);
+  }
+  for (const bucket of children.values()) bucket.sort();
+  return children;
+}
+
+// Mirrors PackHeuristics.checkUnreferencedFiles then checkRootLevelContentFiles: one level into each
+// top-level directory, so a nested directory is reported once rather than file by file.
+function checkUnreferencedPaths(manifest: Record<string, unknown>, tree: RepoTree): Finding[] {
+  const referenced = collectReferencedPaths(manifest);
+  const ignored = ignoreMatcherFor(manifest);
+  const children = listShallowChildren(tree);
+  const root = children.get("") ?? [];
+  const findings: Finding[] = [];
+
+  for (const dir of root) {
+    if (!tree.directories.has(dir) || BUILTIN_IGNORED_DIRS.has(dir) || ignored(dir)) continue;
+    for (const item of children.get(dir) ?? []) {
+      if (referenced.has(item) || ignored(item)) continue;
+      findings.push(warning(`${item} is not referenced by any component or template`));
+    }
+  }
+  for (const name of root) {
+    if (!tree.files.has(name) || BUILTIN_INFRASTRUCTURE_FILES.has(name)) continue;
+    if (referenced.has(name) || ignored(name)) continue;
+    findings.push(warning(`${name} is not referenced by any component`));
+  }
+  return findings;
+}
+
+// An unparseable pattern already fails validateTechpackYaml; here it must not take the other checks down.
+function ignoreMatcherFor(manifest: Record<string, unknown>): Matcher {
+  const patterns = Array.isArray(manifest.ignore)
+    ? manifest.ignore.filter((p): p is string => typeof p === "string")
+    : [];
+  try {
+    return compileAnyMatcher(patterns);
+  } catch {
+    return () => false;
+  }
+}
+
+// Mirrors PackHeuristics.checkPythonModulePaths: `python -m pkg` needs a `pkg/` directory in the pack.
+function checkPythonModulePaths(resolved: ResolvedComponent[], tree: RepoTree): Finding[] {
+  const findings: Finding[] = [];
+  for (const { action } of resolved) {
+    if (action?.kind !== "mcp" || action.command === undefined || action.args === undefined) continue;
+    if (MCP_RUNTIMES[lastPathComponent(action.command)] !== "python") continue;
+    const m = action.args.indexOf("-m");
+    if (m < 0 || m + 1 >= action.args.length) continue;
+    const moduleName = action.args[m + 1];
+    if (tree.directories.has(moduleName)) continue;
+    findings.push(warning(
+      `MCP server '${action.name}' references module '${moduleName}' but ${moduleName}/ directory not found in pack`
+    ));
+  }
+  return findings;
 }
 
 type InstallAction =
   | { kind: "brew"; package: string }
-  | { kind: "mcp"; name: string; command?: string }
-  | { kind: "copy"; source?: string; destination?: string; fileType?: string };
+  | { kind: "mcp"; name: string; command?: string; args?: string[] }
+  | { kind: "copy"; source?: string; destination?: string; fileType?: string }
+  | { kind: "settingsFile"; source: string };
 
 interface HookInvocation {
   interpreter: string;
@@ -757,7 +755,16 @@ function brewAction(pkg: unknown): InstallAction | null {
 }
 
 function mcpAction(config: Record<string, unknown>, id: unknown): InstallAction {
-  return { kind: "mcp", name: optionalString(config.name) ?? String(id), command: optionalString(config.command) };
+  const args = Array.isArray(config.args) && config.args.every((a) => typeof a === "string")
+    ? (config.args as string[])
+    : undefined;
+  // mcs names an unnamed server after the id's last non-empty dot-separated segment (Swift `split`).
+  const name = optionalString(config.name) ?? String(id).split(".").filter(Boolean).pop() ?? String(id);
+  return { kind: "mcp", name, command: optionalString(config.command), args };
+}
+
+function settingsFileAction(source: unknown): InstallAction | null {
+  return typeof source === "string" ? { kind: "settingsFile", source } : null;
 }
 
 function copyAction(config: Record<string, unknown>, fileType: string | undefined): InstallAction {
@@ -779,6 +786,8 @@ function resolveInstallAction(comp: Record<string, unknown>): InstallAction | nu
         return brewAction(value);
       case "mcp":
         return config && mcpAction(config, comp.id);
+      case "settingsFile":
+        return settingsFileAction(value);
       default:
         return config && COPY_SHORTHAND_KEYS.has(key) ? copyAction(config, key) : null;
     }
@@ -794,6 +803,8 @@ function resolveInstallAction(comp: Record<string, unknown>): InstallAction | nu
       return mcpAction(a, comp.id);
     case "copyPackFile":
       return copyAction(a, optionalString(a.fileType));
+    case "settingsFile":
+      return settingsFileAction(a.source);
     default:
       return null;
   }
@@ -861,27 +872,6 @@ function checkMCPDependencyGaps(resolved: ResolvedComponent[], brewPackages: Rea
     if (runtime && !installs(runtime, brewPackages)) {
       findings.push(`MCP server '${action.name}' uses ${runtime} but no brew component installs ${runtime}`);
     }
-  }
-  return findings;
-}
-
-// Null for core formulae, Homebrew's own taps, and URL/path forms that also split into three parts.
-function tapReference(pkg: string): string | null {
-  if (pkg.includes(":") || pkg.startsWith("/") || pkg.startsWith(".")) return null;
-  const parts = pkg.split("/").filter((p) => p.length > 0);
-  if (parts.length !== 3 || parts[0].toLowerCase() === "homebrew") return null;
-  return `${parts[0]}/${parts[1]}`;
-}
-
-function checkThirdPartyTaps(resolved: ResolvedComponent[]): string[] {
-  const findings: string[] = [];
-  for (const { comp, action } of resolved) {
-    if (action?.kind !== "brew") continue;
-    const tap = tapReference(action.package);
-    if (!tap) continue;
-    findings.push(
-      `Component '${comp.id}' installs '${action.package}' from third-party tap '${tap}' — 'mcs sync' taps it without confirmation from Homebrew or mcs.`
-    );
   }
   return findings;
 }

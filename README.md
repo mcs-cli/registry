@@ -8,16 +8,17 @@ The public registry for [MCS](https://mcs-cli.dev) tech packs. Browse, search, a
 - **API**: Cloudflare Workers (edge functions)
 - **Data**: Cloudflare KV (key-value store)
 - **Bot prevention**: Cloudflare Turnstile
-- **Reindexing**: Cron Trigger every 6 hours via GitHub GraphQL API
+- **Reindexing & validation**: GitHub Actions every 6 hours — metadata via GitHub GraphQL, then the same checks as `mcs pack validate`
 
 ## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/packs` | List/search packs (`?q=`, `?sort=stars\|recent`, `?limit=`, `?offset=`) |
-| `GET` | `/api/packs/:identifier` | Get a single pack |
+| `GET` | `/api/packs/github/:owner/:repo` | Get a single pack |
 | `POST` | `/api/submit` | Submit a new pack |
-| `POST` | `/api/reindex` | Trigger manual reindex |
+| `POST` | `/api/reindex` | Refresh repository metadata (auth) |
+| `POST` | `/api/packs/update-status` | Record a pack's validation verdict (auth, used by `scripts/validate.ts`) |
 
 ## Local Development
 

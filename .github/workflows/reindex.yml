@@ -1,25 +1,33 @@
-name: Scheduled Reindex
+name: Reindex & Validate
 
+# Two sequential steps with one writer each: the Worker's reindex refreshes repository
+# metadata (stars, branch, tag, pushedAt, unavailable), then scripts/validate.ts records each
+# pack's verdict (active/invalid, warnings, validationErrors) — the same checks as submit.
 on:
   schedule:
     - cron: "0 */6 * * *" # Every 6 hours
   workflow_dispatch:
     inputs:
       force:
-        description: "Force revalidation of all packs (bypass pushedAt optimization)"
+        description: "Revalidate every pack (skip the unchanged-pack optimization)"
         type: boolean
         default: false
 
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: reindex-validate
+  cancel-in-progress: false
+
 jobs:
-  reindex:
+  reindex-validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger reindex
+      - name: Reindex metadata
         run: |
           REINDEX_URL="${{ secrets.REGISTRY_URL }}/api/reindex"
-          if [ "${{ inputs.force }}" = "true" ]; then
-            REINDEX_URL="${REINDEX_URL}?force=true"
-          fi
           response=$(curl -s -w "\n%{http_code}" -X POST \
             -H "Authorization: Bearer ${{ secrets.REINDEX_SECRET }}" \
             "$REINDEX_URL")
@@ -48,13 +56,13 @@ jobs:
           updated=$(echo "$body" | jq -r '.updated // 0')
           unchanged=$(echo "$body" | jq -r '.unchanged // 0')
           unavailable=$(echo "$body" | jq -r '.unavailable // 0')
-          invalid=$(echo "$body" | jq -r '.invalid // 0')
+          skipped=$(echo "$body" | jq -r '.skipped // 0')
           removed=$(echo "$body" | jq -r '.removed // 0')
           errors=$(echo "$body" | jq -r '.errors // []')
           error_count=$(echo "$errors" | jq -r 'length')
 
           # Status emoji
-          if [ "$error_count" != "0" ] || [ "$unavailable" != "0" ] || [ "$invalid" != "0" ]; then
+          if [ "$error_count" != "0" ] || [ "$unavailable" != "0" ]; then
             status_icon="⚠️"
           else
             status_icon="✅"
@@ -62,7 +70,7 @@ jobs:
 
           # Build summary
           cat <<EOF >> "$GITHUB_STEP_SUMMARY"
-          ## $status_icon Reindex Report
+          ## $status_icon Metadata Reindex Report
 
           | Metric | Count |
           |--------|-------|
@@ -70,7 +78,7 @@ jobs:
           | Updated | $updated |
           | Unchanged | $unchanged |
           | Unavailable | $unavailable |
-          | Invalid | $invalid |
+          | Skipped (GitHub gave no answer) | $skipped |
           | Pruned (unavailable) | $removed |
           | Errors | $error_count |
           EOF
@@ -83,12 +91,12 @@ jobs:
             echo "::warning::Reindex completed with $error_count errors"
           fi
 
-          # Add warnings for unavailable/invalid
+          # Add warnings for unavailable / skipped
           if [ "$unavailable" != "0" ]; then
             echo "::warning::$unavailable pack(s) are unavailable"
           fi
-          if [ "$invalid" != "0" ]; then
-            echo "::warning::$invalid pack(s) have invalid manifests"
+          if [ "$skipped" != "0" ]; then
+            echo "::warning::$skipped pack(s) skipped: GitHub did not say whether the repo exists"
           fi
 
           # Hard fail on errors so an aborted reindex doesn't pass as silent success.
@@ -96,3 +104,23 @@ jobs:
             echo "::error::Reindex returned $error_count error(s)"
             exit 1
           fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate packs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
+          REINDEX_SECRET: ${{ secrets.REINDEX_SECRET }}
+          FORCE_ALL: ${{ inputs.force }}
+        run: npx tsx scripts/validate.ts

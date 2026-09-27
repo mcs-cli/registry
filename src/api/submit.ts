@@ -1,7 +1,8 @@
-import type { Env, PackEntry, SubmitRequest } from "../types.js";
-import { fetchRepoMetadata, fetchRepoTree, fetchTechpackYaml, parseGitHubUrl } from "../lib/github.js";
+import type { Env, PackEntry, RepoMetadata, SubmitRequest } from "../types.js";
+import { fetchRepoMetadata, parseGitHubUrl } from "../lib/github.js";
 import { verifyTurnstile } from "../lib/turnstile.js";
-import { validateTechpackYaml, validateFileReferences, runHeuristics } from "../lib/validator.js";
+import { evaluateRepo, type PackEvaluation } from "../lib/packValidation.js";
+import { reconcileIndex } from "../lib/packIndex.js";
 import { jsonResponse } from "./packs.js";
 
 const MAX_SUBMISSIONS_PER_HOUR = 5;
@@ -91,104 +92,67 @@ export async function handleSubmit(
     // Non-active pack — allow re-submission, will be overwritten below
   }
 
-  // Fetch repo metadata
-  const metadata = await fetchRepoMetadata(repoUrl, env.GITHUB_TOKEN);
-  if (!metadata) {
-    return jsonResponse(
-      { error: "Repository not found or not accessible. Make sure it's a public GitHub repository." },
-      400
-    );
+  let evaluation: PackEvaluation;
+  let metadata: RepoMetadata | null;
+  try {
+    metadata = await fetchRepoMetadata(repoUrl, env.GITHUB_TOKEN);
+    if (!metadata) {
+      return jsonResponse(
+        { error: "Repository not found or not accessible. Make sure it's a public GitHub repository." },
+        400
+      );
+    }
+    evaluation = await evaluateRepo(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN);
+  } catch (err) {
+    console.error(`[submit] GitHub fetch failed for ${repoUrl}: ${err instanceof Error ? err.message : String(err)}`);
+    return jsonResponse({ error: "Could not reach GitHub to validate the repository. Please try again later." }, 502);
   }
 
-  // Fetch techpack.yaml and repo tree in parallel (independent calls, saves a round-trip)
-  const [yamlContent, repoTree] = await Promise.all([
-    fetchTechpackYaml(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
-    fetchRepoTree(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
-  ]);
-
-  if (!yamlContent) {
-    return jsonResponse(
-      { error: "No techpack.yaml found at the repository root. This file is required for MCS tech packs." },
-      400
-    );
-  }
-
-  // Validate
-  const validation = validateTechpackYaml(yamlContent);
-  if (!validation.valid || !validation.packData) {
+  if (evaluation.status === "invalid" || !evaluation.packData) {
     return jsonResponse(
       {
-        error: "techpack.yaml validation failed.",
-        details: validation.errors,
+        error: "Tech pack validation failed.",
+        details: evaluation.errors,
+        warnings: evaluation.warnings,
       },
       422
     );
   }
 
-  // File-existence validation
-  let fileWarnings: string[] = [];
-  if (repoTree && validation.manifest) {
-    const fileValidation = validateFileReferences(validation.manifest, repoTree);
-    if (fileValidation.errors.length > 0) {
-      return jsonResponse(
-        {
-          error: "techpack.yaml references files that don't exist in the repository.",
-          details: fileValidation.errors,
-          warnings: fileValidation.warnings,
-        },
-        422
-      );
-    }
-    fileWarnings = fileValidation.warnings;
-  }
-
-  // Heuristic checks (unreferenced files, missing brew packages)
-  let heuristicHints: string[] = [];
-  if (repoTree && validation.manifest) {
-    heuristicHints = runHeuristics(validation.manifest, repoTree);
-  }
-
-  // If there are warnings and the user hasn't confirmed, ask for confirmation
-  const allWarnings = [...validation.warnings, ...fileWarnings, ...heuristicHints];
-  if (allWarnings.length > 0 && !body.confirmWarnings) {
+  if (evaluation.warnings.length > 0 && !body.confirmWarnings) {
     const confirmationToken = await generateConfirmationToken(body.repoUrl, ip, env.TURNSTILE_SECRET_KEY);
     return jsonResponse({
       requiresConfirmation: true,
-      warnings: allWarnings,
+      warnings: evaluation.warnings,
       confirmationToken,
     }, 200);
   }
 
-  // Build pack entry
+  const now = new Date().toISOString();
   const pack: PackEntry = {
     slug,
-    identifier: validation.packData.identifier,
-    displayName: validation.packData.displayName,
-    description: validation.packData.description,
-    author: validation.packData.author,
+    identifier: evaluation.packData.identifier,
+    displayName: evaluation.packData.displayName,
+    description: evaluation.packData.description,
+    author: evaluation.packData.author,
     repoUrl,
     defaultBranch: metadata.defaultBranch,
     latestTag: metadata.latestTag,
     stargazerCount: metadata.stargazerCount,
     pushedAt: metadata.pushedAt,
-    components: validation.packData.components,
-    keywords: validation.packData.keywords,
+    components: evaluation.packData.components,
+    keywords: evaluation.packData.keywords,
     status: "active",
-    indexedAt: new Date().toISOString(),
-    warnings: allWarnings.length > 0 ? allWarnings : undefined,
+    indexedAt: now,
+    warnings: evaluation.warnings.length > 0 ? evaluation.warnings : undefined,
+    // No validatorVersion: the Worker cannot digest the validator sources, so the next scheduled run re-checks the pack once.
+    deepValidatedAt: now,
   };
 
   // Store in KV
   await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
 
-  // Update index list
-  const indexRaw = await env.PACKS.get("index:all");
-  const slugs: string[] = indexRaw ? JSON.parse(indexRaw) : [];
-  if (!slugs.includes(slug)) {
-    slugs.push(slug);
-    slugs.sort();
-    await env.PACKS.put("index:all", JSON.stringify(slugs));
-  }
+  await reconcileIndex(env, pack);
 
   // Increment rate limit counter
   await incrementRateLimit(ip, env);

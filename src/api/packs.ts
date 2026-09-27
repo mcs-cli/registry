@@ -1,5 +1,6 @@
-import type { Env, PackEntry } from "../types.js";
+import type { Env, ExtractedPackData, PackEntry } from "../types.js";
 import { reindexSinglePack } from "./reindex.js";
+import { reconcileIndex } from "../lib/packIndex.js";
 
 export async function handleListPacks(
   request: Request,
@@ -139,6 +140,9 @@ export interface UpdatePackStatusRequest {
   warnings?: string[];
   validationErrors?: string[];
   deepValidatedAt?: string;
+  validatorVersion?: string;
+  // What the manifest says about the pack (name, description, counts, keywords), as of this verdict.
+  packData?: ExtractedPackData;
 }
 
 export async function handleUpdatePackStatus(
@@ -168,27 +172,24 @@ export async function handleUpdatePackStatus(
 
   const pack = JSON.parse(raw) as PackEntry;
 
+  // Availability belongs to reindex; a validation verdict computed before the repo vanished must not revive it.
+  if (pack.status === "unavailable" && body.status && body.status !== "unavailable") {
+    return jsonResponse({ error: `Pack '${body.slug}' is unavailable; reindex must restore it first` }, 409);
+  }
+
   if (body.status) pack.status = body.status;
   if (body.warnings !== undefined) pack.warnings = body.warnings.length > 0 ? body.warnings : undefined;
   if (body.validationErrors !== undefined) pack.validationErrors = body.validationErrors.length > 0 ? body.validationErrors : undefined;
   if (body.deepValidatedAt !== undefined) pack.deepValidatedAt = body.deepValidatedAt;
+  if (body.validatorVersion !== undefined) pack.validatorVersion = body.validatorVersion;
+  if (body.packData && typeof body.packData === "object") {
+    const { identifier, displayName, description, author, components, keywords } = body.packData;
+    Object.assign(pack, { identifier, displayName, description, author, components, keywords });
+  }
   pack.indexedAt = new Date().toISOString();
 
   await env.PACKS.put(`pack:${pack.slug}`, JSON.stringify(pack));
-
-  // Update index: add if active, remove if not
-  const indexRaw = await env.PACKS.get("index:all");
-  const slugs: string[] = indexRaw ? JSON.parse(indexRaw) : [];
-  const inIndex = slugs.includes(pack.slug);
-
-  if (pack.status === "active" && !inIndex) {
-    slugs.push(pack.slug);
-    slugs.sort();
-    await env.PACKS.put("index:all", JSON.stringify(slugs));
-  } else if (pack.status === "unavailable" && inIndex) {
-    const filtered = slugs.filter((s) => s !== pack.slug);
-    await env.PACKS.put("index:all", JSON.stringify(filtered));
-  }
+  await reconcileIndex(env, pack);
 
   return jsonResponse({ success: true, pack });
 }

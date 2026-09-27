@@ -11,6 +11,20 @@ const REPO_FIELDS_FRAGMENT = `
   }
 `;
 
+/** A GitHub response that says nothing about the repository itself (rate limit, outage). */
+export class GitHubApiError extends Error {
+  readonly isRateLimit: boolean;
+
+  constructor(response: Response, endpoint: string) {
+    super(`GitHub API HTTP ${response.status} at ${endpoint}`);
+    // GitHub also answers 403 for a single blocked repository; only these headers mean the token is exhausted.
+    this.isRateLimit =
+      response.status === 429 ||
+      response.headers.get("x-ratelimit-remaining") === "0" ||
+      response.headers.has("retry-after");
+  }
+}
+
 export function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
   const cleaned = url.replace(/\.git$/, "").replace(/\/$/, "");
   const match = cleaned.match(/github\.com\/([^/]+)\/([^/]+)/);
@@ -18,48 +32,37 @@ export function parseGitHubUrl(url: string): { owner: string; repo: string } | n
   return { owner: match[1], repo: match[2] };
 }
 
+/** Null when GitHub reports the repository NOT_FOUND; any answer that says nothing about it throws. */
 export async function fetchRepoMetadata(
   repoUrl: string,
   token: string
 ): Promise<RepoMetadata | null> {
-  const parsed = parseGitHubUrl(repoUrl);
-  if (!parsed) return null;
-
-  const query = `
-    query {
-      repository(owner: "${parsed.owner}", name: "${parsed.repo}") {
-        ${REPO_FIELDS_FRAGMENT}
-      }
-    }
-  `;
-
-  const response = await fetch(GRAPHQL_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `bearer ${token}`,
-      "Content-Type": "application/json",
-      "User-Agent": "mcs-registry",
-    },
-    body: JSON.stringify({ query }),
-  });
-
-  if (!response.ok) return null;
-
-  const json = (await response.json()) as GraphQLResponse<{
-    repository: RawRepoData | null;
-  }>;
-
-  const repo = json.data?.repository;
-  if (!repo) return null;
-
-  return mapRepoData(parsed.owner, parsed.repo, repo);
+  const { found, notFound } = await batchFetchRepoMetadata([repoUrl], token);
+  if (notFound.has(repoUrl)) return null;
+  const metadata = found.get(repoUrl);
+  if (!metadata) throw new Error(`GitHub GraphQL could not resolve ${repoUrl}`);
+  return metadata;
 }
 
+export interface BatchMetadata {
+  found: Map<string, RepoMetadata>;
+  // Only this set may mark a pack unavailable.
+  notFound: Set<string>;
+  // GitHub answered for this repository but not about its existence (e.g. FORBIDDEN for a blocked repo).
+  unknown: Set<string>;
+}
+
+/**
+ * Sorts every repository into found / NOT_FOUND / unknown. An error tied to one alias stays with
+ * that repository, so one blocked repo cannot stall every reindex; an error for the whole request
+ * throws, because a partial answer would be misread as "these repos are gone" and prune live packs
+ * (the cascade that wiped index:all on 2026-05-05).
+ */
 export async function batchFetchRepoMetadata(
   repoUrls: string[],
   token: string
-): Promise<Map<string, RepoMetadata>> {
-  const results = new Map<string, RepoMetadata>();
+): Promise<BatchMetadata> {
+  const results: BatchMetadata = { found: new Map(), notFound: new Set(), unknown: new Set() };
   const parsed = repoUrls
     .map((url) => ({ url, ...parseGitHubUrl(url) }))
     .filter(
@@ -78,8 +81,6 @@ export async function batchFetchRepoMetadata(
       )
       .join("\n");
 
-    const query = `query { ${aliases} }`;
-
     const response = await fetch(GRAPHQL_ENDPOINT, {
       method: "POST",
       headers: {
@@ -87,28 +88,28 @@ export async function batchFetchRepoMetadata(
         "Content-Type": "application/json",
         "User-Agent": "mcs-registry",
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query: `query { ${aliases} }` }),
     });
+    if (!response.ok) throw new GitHubApiError(response, "graphql");
 
-    // Don't silently skip on transport/protocol failure — a partial map gets
-    // misread downstream as "these repos are gone" and triggers a mass-prune.
-    if (!response.ok) {
-      throw new Error(`GitHub GraphQL batch HTTP ${response.status}`);
+    const json = (await response.json()) as GraphQLResponse<Record<string, RawRepoData | null>>;
+    const aliasErrors = new Map<string, GraphQLError>();
+    for (const error of json.errors ?? []) {
+      const alias = error.path?.[0];
+      if (typeof alias !== "string" || !/^repo\d+$/.test(alias)) {
+        throw new Error(`GitHub GraphQL batch error: ${error.type ?? "unknown"}: ${error.message}`);
+      }
+      aliasErrors.set(alias, error);
     }
-
-    const json = (await response.json()) as GraphQLResponse<
-      Record<string, RawRepoData | null>
-    >;
-    if (!json.data) {
-      const msg = json.errors?.map((e) => e.message).join("; ") ?? "no data";
-      throw new Error(`GitHub GraphQL batch error: ${msg}`);
-    }
+    if (!json.data) throw new Error("GitHub GraphQL batch error: no data");
 
     batch.forEach((p, idx) => {
-      const repo = json.data?.[`repo${idx}`];
-      if (repo) {
-        results.set(p.url, mapRepoData(p.owner, p.repo, repo));
-      }
+      const alias = `repo${idx}`;
+      const repo = json.data?.[alias];
+      const error = aliasErrors.get(alias);
+      if (repo) results.found.set(p.url, mapRepoData(p.owner, p.repo, repo));
+      else if (!error || error.type === "NOT_FOUND") results.notFound.add(p.url);
+      else results.unknown.add(p.url);
     });
   }
 
@@ -130,10 +131,12 @@ export async function fetchTechpackYaml(
     },
   });
 
-  if (!response.ok) return null;
+  if (response.status === 404) return null;
+  if (!response.ok) throw new GitHubApiError(response, `repos/${owner}/${repo}/contents/techpack.yaml`);
   return response.text();
 }
 
+/** Null only when GitHub truncated the tree; a failed request throws. */
 export async function fetchRepoTree(
   owner: string,
   repo: string,
@@ -149,10 +152,7 @@ export async function fetchRepoTree(
     },
   });
 
-  if (!response.ok) {
-    console.log(`[github] Tree fetch failed for ${owner}/${repo}@${branch}: HTTP ${response.status}`);
-    return null;
-  }
+  if (!response.ok) throw new GitHubApiError(response, `repos/${owner}/${repo}/git/trees`);
 
   const json = (await response.json()) as GitTreeResponse;
 
@@ -169,7 +169,8 @@ export async function fetchRepoTree(
   for (const entry of json.tree) {
     if (entry.type === "blob") {
       files.add(entry.path);
-    } else if (entry.type === "tree") {
+    } else if (entry.type === "tree" || entry.type === "commit") {
+      // A submodule is a directory in the checkout mcs validates.
       directories.add(entry.path);
     }
   }
@@ -193,9 +194,15 @@ interface GitTreeResponse {
   truncated: boolean;
 }
 
+interface GraphQLError {
+  message: string;
+  type?: string;
+  path?: Array<string | number>;
+}
+
 interface GraphQLResponse<T> {
   data?: T;
-  errors?: Array<{ message: string }>;
+  errors?: GraphQLError[];
 }
 
 function mapRepoData(
