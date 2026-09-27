@@ -228,6 +228,9 @@ const withComps = (...components: Record<string, unknown>[]) => baseManifest({ c
 }
 for (const [value, expected] of [
   ["node --experimental-strip-types", null],
+  ["node --experimental-strip-types --disable-warning=ExperimentalWarning", null],
+  ["/usr/bin/env node", null],
+  ["n".repeat(200), null],
   ["/opt/homebrew/bin/bun run", null],
   ["  uv run  ", null],
   ["   ", "Component 'gate': hookInterpreter must not be empty — omit it to use bash"],
@@ -239,7 +242,11 @@ for (const [value, expected] of [
   ["n".repeat(201), "Component 'gate': hookInterpreter must be at most 200 characters (got 201)"],
 ] as const) {
   const r = validateTechpackYaml(yamlOf(withComps(hookComp({ hookInterpreter: value }))));
-  eq(`hookInterpreter ${JSON.stringify(value).slice(0, 40)}`, r.errors[0] ?? null, expected);
+  eq(`hookInterpreter ${JSON.stringify(value).slice(0, 40)}`, r.errors, expected === null ? [] : [expected]);
+}
+{
+  const r = validateTechpackYaml("schemaVersion: 1\nidentifier: test\ndisplayName: Test\ndescription: d\ncomponents:\n  - id: c\n    description: x\n    brew: jq\n    hookInterpreter:\n    hookMatcher: ~\n");
+  eq("blank hook fields count as absent, like decodeIfPresent", r.errors, []);
 }
 {
   const check = { type: "hookEventExists", name: "hook registered", event: "PreToolUse", matcher: "" };
@@ -253,11 +260,9 @@ for (const [value, expected] of [
 {
   const check = { type: "hookEventExists", name: "hook registered", event: "PreToolUse", command: "" };
   const r = validateTechpackYaml(yamlOf(withComps(hookComp({ doctorChecks: [check] }))));
-  eq("empty hookEventExists command on component check rejected", r.errors.length, 1);
-}
-{
-  const r = validateTechpackYaml(yamlOf(withComps({ id: "c", description: "x", brew: "jq", dependencies: ["missing"], isRequired: true })));
-  eq("deprecated keys do not fail validation", r.valid, true);
+  eq("empty hookEventExists command on component check rejected", r.errors, [
+    "Invalid doctor check 'hook registered': hookEventExists 'command' must be non-empty — omit it to skip the assertion",
+  ]);
 }
 
 console.log("\n=== runHeuristics: mcs 2026.9 warnings ===");
@@ -324,15 +329,43 @@ const noTree = tree([]);
   eq("uncorrelated supplementary check not paired", runHeuristics(unrelated, noTree), []);
 }
 {
+  const verboseHook = {
+    id: "v",
+    description: "x",
+    type: "hookFile",
+    hookEvent: "Stop",
+    installAction: { type: "copyPackFile", source: "hooks/v.js", destination: "v.js", fileType: "hook" },
+  };
+  eq("long-form copyPackFile hook resolved", runHeuristics(withComps(verboseHook), noTree), ["Hook 'v' uses node but no brew component installs node"]);
+  const verboseBrew = { id: "b", description: "x", type: "brewPackage", installAction: { type: "brewInstall", package: "node" } };
+  eq("long-form brewInstall satisfies runtime", runHeuristics(withComps(verboseHook, verboseBrew), noTree), []);
+  const verboseMcp = { id: "m", description: "x", type: "mcpServer", installAction: { type: "mcpServer", name: "srv", command: "npx" } };
+  eq("long-form mcpServer checked", runHeuristics(withComps(verboseMcp), noTree), ["MCP server 'srv' uses node but no brew component installs node"]);
+
+  const notHookFile = { ...verboseHook, id: "g", type: "command" };
+  eq("non-hookFile type ignored", runHeuristics(withComps(notHookFile), noTree), []);
+  eq("hookFile without hookEvent ignored", runHeuristics(withComps({ ...verboseHook, hookEvent: undefined }), noTree), []);
+  const genericFile = { ...verboseHook, installAction: { ...verboseHook.installAction, fileType: "generic" } };
+  eq("fileType other than hook ignored", runHeuristics(withComps(genericFile), noTree), []);
+
+  const via = (source: string, destination: string) => runHeuristics(withComps(hookComp({ hook: { source, destination } })), noTree);
+  eq("extensionless destination falls back to .py source", via("hooks/p.py", "p"), ["Hook 'gate' uses python3 but no brew component installs python3"]);
+  eq("unknown destination extension does not fall back", via("hooks/p.py", "p.bin"), []);
+  eq("extension match is case-insensitive", via("hooks/g.JS", "g.JS"), ["Hook 'gate' uses node but no brew component installs node"]);
+}
+{
   const m = baseManifest({
     components: [{ id: "c", description: "x", brew: "jq", isRequired: true, dependencies: [] }],
-    templates: [{ sectionIdentifier: "s", contentFile: "t.md", dependencies: ["c"] }],
+    templates: [{ sectionIdentifier: "s", contentFile: "t.md", dependencies: ["c"], isRequired: false }],
   });
   eq("deprecated keys warned on components and templates", runHeuristics(m, tree(["t.md"])), [
     "Component 'c' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
     "Component 'c' declares `dependencies`, which is deprecated and ignored — packs install every component, in declaration order",
+    "Template 's' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
     "Template 's' declares `dependencies`, which is deprecated and ignored — packs install every component, in declaration order",
   ]);
+  const r = validateTechpackYaml(yamlOf(withComps({ id: "c", description: "x", brew: "jq", dependencies: ["missing"], isRequired: true })));
+  eq("deprecated keys do not fail validation", r.errors, []);
 }
 {
   const mcp = (command: string) => ({ id: "srv", description: "x", mcp: { command } });

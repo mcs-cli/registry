@@ -76,6 +76,8 @@ const SHORTHAND_TYPE_MAP: Record<string, string> = {
 
 const HOOK_METADATA_FIELDS = ["hookMatcher", "hookInterpreter", "hookTimeout", "hookAsync", "hookStatusMessage"] as const;
 
+const SHORTHAND_KEYS = Object.keys(SHORTHAND_TYPE_MAP);
+
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
   "has", "he", "in", "is", "it", "its", "of", "on", "or", "that",
@@ -142,12 +144,12 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
 
     if (!hookEvent) {
       for (const field of HOOK_METADATA_FIELDS) {
-        if (comp[field] !== undefined) errors.push(`Component '${id}': ${field} requires hookEvent`);
+        if (comp[field] != null) errors.push(`Component '${id}': ${field} requires hookEvent`);
       }
     }
 
     if (
-      comp.hookTimeout !== undefined &&
+      comp.hookTimeout != null &&
       (typeof comp.hookTimeout !== "number" || comp.hookTimeout <= 0)
     ) {
       errors.push(`Component '${id}': hookTimeout must be a positive integer`);
@@ -530,12 +532,12 @@ function validateComponent(comp: Record<string, unknown>, index: number, errors:
   }
 
   // hookAsync must be boolean
-  if (comp.hookAsync !== undefined && typeof comp.hookAsync !== "boolean") {
+  if (comp.hookAsync != null && typeof comp.hookAsync !== "boolean") {
     errors.push(`components[${index}].hookAsync must be a boolean`);
   }
 
   for (const field of ["hookMatcher", "hookStatusMessage", "hookInterpreter"] as const) {
-    if (comp[field] !== undefined && typeof comp[field] !== "string") {
+    if (comp[field] != null && typeof comp[field] !== "string") {
       errors.push(`components[${index}].${field} must be a string`);
     }
   }
@@ -583,14 +585,18 @@ function extractPackData(
   };
 }
 
+// The shorthand mcs resolveShorthand picks, in its precedence order; its `contains` is true for an explicit null too.
+function shorthandKey(comp: Record<string, unknown>): string | undefined {
+  return SHORTHAND_KEYS.find((key) => comp[key] !== undefined);
+}
+
 function resolveComponentType(comp: Record<string, unknown>): string | null {
-  // Check shorthand keys first
-  for (const [key, type] of Object.entries(SHORTHAND_TYPE_MAP)) {
-    if (comp[key] !== undefined) {
-      // shell shorthand requires explicit type field
-      if (type === "") return typeof comp.type === "string" ? comp.type : null;
-      return type;
-    }
+  const key = shorthandKey(comp);
+  if (key !== undefined) {
+    const type = SHORTHAND_TYPE_MAP[key];
+    // shell shorthand requires explicit type field
+    if (type === "") return typeof comp.type === "string" ? comp.type : null;
+    return type;
   }
 
   // Check explicit type field
@@ -698,7 +704,7 @@ export function runHeuristics(
     pushHint(`Unreferenced file '${file}' at repository root — not referenced by any component`);
   }
 
-  // Mirrors the remaining PackHeuristics.check sweep, in its order.
+  // Mirrors the rest of PackHeuristics.check, in its order; checkPythonModulePaths is not ported.
   const resolved = components.map(resolveComponent);
   const brewPackages = collectBrewPackages(resolved);
   const doctorChecks = allDoctorChecks(manifest);
@@ -723,6 +729,7 @@ type InstallAction =
 
 interface HookInvocation {
   interpreter: string;
+  explicit: boolean;
   destination: string;
   source?: string;
 }
@@ -733,7 +740,6 @@ interface ResolvedComponent {
   hook: HookInvocation | null;
 }
 
-const SHORTHAND_KEYS = Object.keys(SHORTHAND_TYPE_MAP);
 const COPY_SHORTHAND_KEYS = new Set<string>(SOURCE_SHORTHAND_KEYS);
 
 function records(value: unknown): Array<Record<string, unknown>> {
@@ -742,7 +748,9 @@ function records(value: unknown): Array<Record<string, unknown>> {
     : [];
 }
 
-const optionalString = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
 
 function brewAction(pkg: unknown): InstallAction | null {
   return typeof pkg === "string" ? { kind: "brew", package: pkg } : null;
@@ -762,15 +770,18 @@ function copyAction(config: Record<string, unknown>, fileType: string | undefine
 }
 
 function resolveInstallAction(comp: Record<string, unknown>): InstallAction | null {
-  const shorthandKey = SHORTHAND_KEYS.find((key) => comp[key] !== undefined);
-  if (shorthandKey !== undefined) {
-    const value = comp[shorthandKey];
-    if (shorthandKey === "brew") return brewAction(value);
-    if (!value || typeof value !== "object") return null;
-    const config = value as Record<string, unknown>;
-    if (shorthandKey === "mcp") return mcpAction(config, comp.id);
-    if (COPY_SHORTHAND_KEYS.has(shorthandKey)) return copyAction(config, shorthandKey);
-    return null;
+  const key = shorthandKey(comp);
+  if (key !== undefined) {
+    const value = comp[key];
+    const config = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+    switch (key) {
+      case "brew":
+        return brewAction(value);
+      case "mcp":
+        return config && mcpAction(config, comp.id);
+      default:
+        return config && COPY_SHORTHAND_KEYS.has(key) ? copyAction(config, key) : null;
+    }
   }
 
   const action = comp.installAction;
@@ -788,7 +799,7 @@ function resolveInstallAction(comp: Record<string, unknown>): InstallAction | nu
   }
 }
 
-// Mirrors ExternalComponentDefinition.hookInvocation: all three conditions, or findings cover hooks sync never registers.
+// Mirrors ExternalComponentDefinition.hookInvocation. Dropping any guard reports hooks that sync never registers.
 function resolveComponent(comp: Record<string, unknown>): ResolvedComponent {
   const action = resolveInstallAction(comp);
   if (
@@ -801,8 +812,9 @@ function resolveComponent(comp: Record<string, unknown>): ResolvedComponent {
     return { comp, action, hook: null };
   }
   const { destination, source } = action;
-  const interpreter = resolveHookInterpreter(optionalString(comp.hookInterpreter), destination, source);
-  return { comp, action, hook: { interpreter, destination, source } };
+  const explicit = optionalString(comp.hookInterpreter);
+  const interpreter = resolveHookInterpreter(explicit, destination, source);
+  return { comp, action, hook: { interpreter, explicit: explicit !== undefined, destination, source } };
 }
 
 function allDoctorChecks(manifest: Record<string, unknown>): Array<Record<string, unknown>> {
@@ -853,7 +865,7 @@ function checkMCPDependencyGaps(resolved: ResolvedComponent[], brewPackages: Rea
   return findings;
 }
 
-// Nil for core formulae, Homebrew's own taps, and URL/path forms that also split into three parts.
+// Null for core formulae, Homebrew's own taps, and URL/path forms that also split into three parts.
 function tapReference(pkg: string): string | null {
   if (pkg.includes(":") || pkg.startsWith("/") || pkg.startsWith(".")) return null;
   const parts = pkg.split("/").filter((p) => p.length > 0);
@@ -878,7 +890,7 @@ const SCOPE_HONORING_CHECK_TYPES = new Set(["fileExists", "directoryExists", "fi
 
 function checkDoctorCheckScopeUsage(checks: Array<Record<string, unknown>>): string[] {
   return checks
-    .filter((c) => c.scope !== undefined && typeof c.type === "string" && !SCOPE_HONORING_CHECK_TYPES.has(c.type))
+    .filter((c) => c.scope != null && typeof c.type === "string" && !SCOPE_HONORING_CHECK_TYPES.has(c.type))
     .map((c) => {
       const detail = c.type === "hookEventExists" || c.type === "settingsKeyEquals"
         ? "settings are resolved from the project root automatically (project settings.local.json, then global settings.json)"
@@ -889,7 +901,7 @@ function checkDoctorCheckScopeUsage(checks: Array<Record<string, unknown>>): str
 
 function checkDoctorCheckMatcherUsage(checks: Array<Record<string, unknown>>): string[] {
   return checks
-    .filter((c) => c.matcher !== undefined && typeof c.type === "string" && c.type !== "hookEventExists")
+    .filter((c) => c.matcher != null && typeof c.type === "string" && c.type !== "hookEventExists")
     .map((c) =>
       `Doctor check '${c.name}' declares \`matcher\` but type \`${c.type}\` ignores it — \`matcher\` applies only to \`hookEventExists\``
     );
@@ -898,7 +910,7 @@ function checkDoctorCheckMatcherUsage(checks: Array<Record<string, unknown>>): s
 function checkAmbiguousHookExtensions(resolved: ResolvedComponent[]): string[] {
   const findings: string[] = [];
   for (const { comp, hook } of resolved) {
-    if (!hook || comp.hookInterpreter !== undefined) continue;
+    if (!hook || hook.explicit) continue;
     if (!isAmbiguouslyTyped(hook.destination, hook.source)) continue;
     findings.push(
       `Hook '${comp.id}' installs '${hook.destination}' but declares no hookInterpreter — it will run under bash. TypeScript has no single default; declare one (e.g. \`hookInterpreter: node --experimental-strip-types\`).`
@@ -955,6 +967,7 @@ function checkHookDoctorCheckInterpreters(manifest: Record<string, unknown>, res
 
 const DEPRECATED_KEYS = ["isRequired", "dependencies"] as const;
 
+// `in`, not a null test: mcs checks `container.contains`, so a blank key still counts as declared.
 function checkDeprecatedKeys(manifest: Record<string, unknown>, components: Array<Record<string, unknown>>): string[] {
   const owners: Array<[string, Record<string, unknown>]> = [
     ...components.map((c): [string, Record<string, unknown>] => [`Component '${c.id}'`, c]),
