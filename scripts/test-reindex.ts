@@ -6,7 +6,7 @@
  * production code runs unchanged.
  */
 import { handleReindex, reindexSinglePack } from "../src/api/reindex.js";
-import { handleUpdatePackStatus } from "../src/api/packs.js";
+import { handleGetPack, handleUpdatePackStatus } from "../src/api/packs.js";
 import { reconcileIndex } from "../src/lib/packIndex.js";
 import { batchFetchRepoMetadata, fetchTechpackYaml } from "../src/lib/github.js";
 import type { Env, PackEntry } from "../src/types.js";
@@ -178,9 +178,13 @@ console.log("\n=== reindexSinglePack ===");
 {
   const kv = new MemoryKV();
   seed(kv, [packEntry("github/a/b")]);
+  const before = JSON.parse(kv.store.get("pack:github/a/b")!) as PackEntry;
   stubFetch(() => json({ data: { repo0: repoData(1) } }));
   await reindexSinglePack("github/a/b", makeEnv(kv));
-  eq("unchanged metadata writes nothing", kv.puts, 0);
+  const after = JSON.parse(kv.store.get("pack:github/a/b")!) as PackEntry;
+  eq("unchanged metadata still writes once, as the refresh throttle", kv.puts, 1);
+  eq("unchanged refresh bumps indexedAt", after.indexedAt > before.indexedAt, true);
+  eq("unchanged refresh leaves every other field byte-identical", { ...after, indexedAt: "" }, { ...before, indexedAt: "" });
 }
 {
   const kv = new MemoryKV();
@@ -189,7 +193,24 @@ console.log("\n=== reindexSinglePack ===");
     json({ data: { repo0: null }, errors: [{ type: "FORBIDDEN", path: ["repo0"], message: "Repository access blocked" }] })
   );
   await reindexSinglePack("github/a/b", makeEnv(kv));
-  eq("blocked repo on refresh writes nothing", kv.puts, 0);
+  const pack = JSON.parse(kv.store.get("pack:github/a/b")!) as PackEntry;
+  eq("blocked repo on refresh keeps its status but records the throttle", [pack.status, pack.indexedAt > "2026-09-01T00:00:00Z", kv.puts], ["active", true, 1]);
+}
+{
+  const kv = new MemoryKV();
+  seed(kv, [packEntry("github/a/b")]);
+  let githubCalls = 0;
+  stubFetch(() => {
+    githubCalls++;
+    return json({ data: { repo0: repoData(1) } });
+  });
+  const pending: Promise<unknown>[] = [];
+  const ctx = { waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException: () => {} } as unknown as ExecutionContext;
+  await handleGetPack("github/a/b", makeEnv(kv), ctx);
+  await Promise.all(pending);
+  await handleGetPack("github/a/b", makeEnv(kv), ctx);
+  await Promise.all(pending);
+  eq("a second view within the hour makes no GitHub call", githubCalls, 1);
 }
 {
   const kv = new MemoryKV();

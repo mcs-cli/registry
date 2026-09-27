@@ -159,18 +159,23 @@ function applyMetadata(pack: PackEntry, metadata: RepoMetadata): boolean {
   return changed;
 }
 
-/** Background refresh for a stale pack view; metadata only, like the scheduled reindex. */
+/**
+ * Background refresh for a stale pack view; metadata only, like the scheduled reindex. Once GitHub
+ * has been asked, the pack is always written back with a fresh `indexedAt`: that write is what
+ * throttles handleGetPack to one refresh per pack per hour, since the scheduled reindex leaves
+ * unchanged packs untouched.
+ */
 export async function reindexSinglePack(slug: string, env: Env): Promise<void> {
   const raw = await env.PACKS.get(`pack:${slug}`);
   if (!raw) return;
   const { repoUrl } = JSON.parse(raw) as PackEntry;
 
-  let metadata: RepoMetadata | null;
+  // undefined: GitHub gave no answer about the repository, so only the throttle is recorded.
+  let metadata: RepoMetadata | null | undefined;
   try {
     metadata = await fetchRepoMetadata(repoUrl, env.GITHUB_TOKEN);
   } catch (err) {
-    console.error(`[reindex] Single refresh of "${slug}" skipped: ${err instanceof Error ? err.message : String(err)}`);
-    return;
+    console.error(`[reindex] Single refresh of "${slug}" got no answer: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // Re-read after the GitHub round trip and change only repository fields, so a verdict written
@@ -178,12 +183,12 @@ export async function reindexSinglePack(slug: string, env: Env): Promise<void> {
   const freshRaw = await env.PACKS.get(`pack:${slug}`);
   if (!freshRaw) return;
   const pack = JSON.parse(freshRaw) as PackEntry;
+  const previousStatus = pack.status;
 
-  const changed = metadata ? applyMetadata(pack, metadata) : pack.status !== "unavailable";
-  if (!metadata) pack.status = "unavailable";
-  if (!changed) return;
+  if (metadata) applyMetadata(pack, metadata);
+  else if (metadata === null) pack.status = "unavailable";
 
   pack.indexedAt = new Date().toISOString();
   await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-  await reconcileIndex(env, pack);
+  if (pack.status !== previousStatus) await reconcileIndex(env, pack);
 }
