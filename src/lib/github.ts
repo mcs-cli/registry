@@ -13,12 +13,15 @@ const REPO_FIELDS_FRAGMENT = `
 
 /** A GitHub response that says nothing about the repository itself (rate limit, outage). */
 export class GitHubApiError extends Error {
-  constructor(readonly status: number, endpoint: string) {
-    super(`GitHub API HTTP ${status} at ${endpoint}`);
-  }
+  readonly isRateLimit: boolean;
 
-  get isRateLimit(): boolean {
-    return this.status === 403 || this.status === 429;
+  constructor(response: Response, endpoint: string) {
+    super(`GitHub API HTTP ${response.status} at ${endpoint}`);
+    // GitHub also answers 403 for a single blocked repository; only these headers mean the token is exhausted.
+    this.isRateLimit =
+      response.status === 429 ||
+      response.headers.get("x-ratelimit-remaining") === "0" ||
+      response.headers.has("retry-after");
   }
 }
 
@@ -74,7 +77,7 @@ export async function batchFetchRepoMetadata(
       },
       body: JSON.stringify({ query: `query { ${aliases} }` }),
     });
-    if (!response.ok) throw new GitHubApiError(response.status, "graphql");
+    if (!response.ok) throw new GitHubApiError(response, "graphql");
 
     const json = (await response.json()) as GraphQLResponse<Record<string, RawRepoData | null>>;
     const failure = json.errors?.find((e) => e.type !== "NOT_FOUND");
@@ -107,7 +110,7 @@ export async function fetchTechpackYaml(
   });
 
   if (response.status === 404) return null;
-  if (!response.ok) throw new GitHubApiError(response.status, `repos/${owner}/${repo}/contents/techpack.yaml`);
+  if (!response.ok) throw new GitHubApiError(response, `repos/${owner}/${repo}/contents/techpack.yaml`);
   return response.text();
 }
 
@@ -127,7 +130,7 @@ export async function fetchRepoTree(
     },
   });
 
-  if (!response.ok) throw new GitHubApiError(response.status, `repos/${owner}/${repo}/git/trees`);
+  if (!response.ok) throw new GitHubApiError(response, `repos/${owner}/${repo}/git/trees`);
 
   const json = (await response.json()) as GitTreeResponse;
 

@@ -11,6 +11,7 @@
  *   REINDEX_SECRET        — Auth token for the update-status endpoint
  */
 import { evaluateRepo } from "../src/lib/packValidation.js";
+import type { ExtractedPackData } from "../src/types.js";
 import { GitHubApiError, parseGitHubUrl } from "../src/lib/github.js";
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN ?? "";
@@ -52,6 +53,7 @@ interface ValidationReport {
   newStatus: "active" | "invalid";
   errors: string[];
   warnings: string[];
+  packData?: ExtractedPackData;
   statusChanged: boolean;
 }
 
@@ -87,6 +89,7 @@ interface UpdateStatusPayload {
   warnings: string[];
   validationErrors: string[];
   deepValidatedAt: string;
+  packData?: ExtractedPackData;
 }
 
 async function updatePackStatus(payload: UpdateStatusPayload): Promise<boolean> {
@@ -235,6 +238,7 @@ async function validatePack(pack: PackInfo): Promise<ValidationReport> {
     newStatus: evaluation.status,
     errors: evaluation.errors,
     warnings: evaluation.warnings,
+    packData: evaluation.packData,
     statusChanged: evaluation.status !== pack.status,
   };
 }
@@ -287,6 +291,7 @@ async function main() {
       warnings: report.warnings,
       validationErrors: report.errors,
       deepValidatedAt: new Date().toISOString(),
+      packData: report.packData,
     });
     if (!updated) {
       console.log(`    ⚠️  Failed to update status for ${report.slug}`);

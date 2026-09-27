@@ -742,7 +742,9 @@ function mcpAction(config: Record<string, unknown>, id: unknown): InstallAction 
   const args = Array.isArray(config.args) && config.args.every((a) => typeof a === "string")
     ? (config.args as string[])
     : undefined;
-  return { kind: "mcp", name: optionalString(config.name) ?? String(id), command: optionalString(config.command), args };
+  // mcs names an unnamed server after the id's last non-empty dot-separated segment (Swift `split`).
+  const name = optionalString(config.name) ?? String(id).split(".").filter(Boolean).pop() ?? String(id);
+  return { kind: "mcp", name, command: optionalString(config.command), args };
 }
 
 function settingsFileAction(source: unknown): InstallAction | null {

@@ -9,6 +9,7 @@
  */
 import { validateTechpackYaml, runHeuristics } from "../src/lib/validator.js";
 import { evaluatePack, TREE_UNAVAILABLE_WARNING } from "../src/lib/packValidation.js";
+import { GitHubApiError } from "../src/lib/github.js";
 import { BUILTIN_IGNORED_DIRS, BUILTIN_INFRASTRUCTURE_FILES } from "../src/lib/builtinIgnore.js";
 import type { RepoTree } from "../src/types.js";
 
@@ -383,6 +384,14 @@ const noTree = tree([]);
   eq("python MCP gap uses mcs wording", messagesOf(withComps(mcp("/usr/bin/python3")), noTree), [
     "MCP server 'srv' uses python but no brew component installs python",
   ]);
+  const dotted = { id: "demo.server", description: "x", mcp: { command: "npx" } };
+  eq("unnamed MCP server takes the id's last segment, like mcs", messagesOf(withComps(dotted), noTree), [
+    "MCP server 'server' uses node but no brew component installs node",
+  ]);
+  const trailingDot = { id: "demo.", description: "x", mcp: { command: "npx" } };
+  eq("empty segments are dropped, like Swift split", messagesOf(withComps(trailingDot), noTree), [
+    "MCP server 'demo' uses node but no brew component installs node",
+  ]);
 }
 
 console.log("\n=== evaluatePack: verdicts match mcs pack validate ===");
@@ -445,6 +454,17 @@ const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
   const r = evaluatePack(yamlOf(baseManifest()), null);
   eq("truncated tree skips file checks with one warning", [r.status, r.warnings], ["active", [TREE_UNAVAILABLE_WARNING]]);
   eq("missing techpack.yaml", evaluatePack(null, tree([])).errors, ["No techpack.yaml found at the repository root"]);
+}
+
+console.log("\n=== GitHubApiError: only an exhausted token aborts a run ===");
+
+{
+  const err = (status: number, headers: Record<string, string> = {}) =>
+    new GitHubApiError(new Response(null, { status, headers }), "test").isRateLimit;
+  eq("403 for one blocked repo is not a rate limit", err(403), false);
+  eq("403 with x-ratelimit-remaining: 0 is", err(403, { "x-ratelimit-remaining": "0" }), true);
+  eq("403 with retry-after (secondary limit) is", err(403, { "retry-after": "60" }), true);
+  eq("429 is", err(429), true);
 }
 
 console.log("\n=== Built-in list drift (parity contract with mcs) ===");

@@ -128,8 +128,8 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
 
 /**
  * Copies fresh repository metadata onto the pack. A pack that was unavailable and is reachable
- * again loses its `deepValidatedAt`, so the next scheduled validation re-checks it rather than
- * trusting a verdict recorded before the repository went away.
+ * again shows its last verdict and loses its `deepValidatedAt`, so the next scheduled validation
+ * re-checks it rather than trusting a verdict recorded before the repository went away.
  */
 function applyMetadata(pack: PackEntry, metadata: RepoMetadata): "updated" | "unchanged" | "recovered" {
   const recovered = pack.status === "unavailable";
@@ -145,7 +145,7 @@ function applyMetadata(pack: PackEntry, metadata: RepoMetadata): "updated" | "un
   pack.pushedAt = metadata.pushedAt;
 
   if (recovered) {
-    pack.status = "active";
+    pack.status = pack.validationErrors?.length ? "invalid" : "active";
     pack.deepValidatedAt = undefined;
     return "recovered";
   }

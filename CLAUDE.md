@@ -80,7 +80,7 @@ Each pack field has exactly one scheduled writer, so no job overwrites another's
 | Fields | Written by |
 |--------|-----------|
 | `stargazerCount`, `defaultBranch`, `latestTag`, `pushedAt`, `unavailable` status | `handleReindex` / `reindexSinglePack` (Worker) |
-| `active`/`invalid` status, `warnings`, `validationErrors`, `deepValidatedAt` | `scripts/validate.ts` (Actions) and `handleSubmit`, both via `evaluatePack` |
+| `active`/`invalid` status, `warnings`, `validationErrors`, `deepValidatedAt`, and the manifest-derived `identifier`, `displayName`, `description`, `author`, `components`, `keywords` | `scripts/validate.ts` (Actions, via `update-status`'s `packData`) and `handleSubmit`, both via `evaluatePack` |
 
 - **Scheduled**: `.github/workflows/reindex.yml` runs every 6h — `POST /api/reindex` (metadata), then `scripts/validate.ts` (verdicts + issue filing for newly invalid packs). `force` revalidates every pack.
 - **On-demand**: `handleGetPack` fires a background metadata-only `reindexSinglePack` if data is >1h stale.
@@ -88,7 +88,7 @@ Each pack field has exactly one scheduled writer, so no job overwrites another's
 - **Transient GitHub failures never become verdicts**: `fetchTechpackYaml` returns null only on 404, `fetchRepoTree` only on truncation, and a repo is "gone" only when GraphQL says `NOT_FOUND`; anything else throws and the stored state is kept.
 - **Index membership**: `reconcileIndex` (`src/lib/packIndex.ts`) is the one place `index:all` gains or loses a single pack; call it after writing a pack whose status may have changed.
 - **Batch GraphQL**: Up to 50 repos per GitHub API call
-- **Pack statuses**: `active | unavailable | invalid` — `unavailable` packs are pruned from `index:all` (KV entry kept, filtered from listing), and `update-status` refuses to revive one. A pack that becomes reachable again is restored to `active` with `deepValidatedAt` cleared so the next validation re-checks it. `invalid` packs stay in `index:all` and render at the bottom of the grid with a red banner; the pack modal exposes a "Report issue" button that builds a prefilled GitHub issue URL.
+- **Pack statuses**: `active | unavailable | invalid` — `unavailable` packs are pruned from `index:all` (KV entry kept, filtered from listing), and `update-status` refuses to revive one. A pack that becomes reachable again gets its last verdict back (`invalid` if it has `validationErrors`, else `active`) with `deepValidatedAt` cleared so the next validation re-checks it. `invalid` packs stay in `index:all` and render at the bottom of the grid with a red banner; the pack modal exposes a "Report issue" button that builds a prefilled GitHub issue URL.
 
 ## Secrets
 
