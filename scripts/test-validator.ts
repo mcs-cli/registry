@@ -205,6 +205,144 @@ console.log("\n=== Robustness ===");
   eq("last hint is truncation marker", hints[50].includes("truncated"), true);
 }
 
+console.log("\n=== validateTechpackYaml: hook metadata + doctor checks ===");
+
+function hookComp(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "gate",
+    description: "x",
+    hookEvent: "PreToolUse",
+    hook: { source: "hooks/gate.js", destination: "gate.js" },
+    ...extra,
+  };
+}
+const withComps = (...components: Record<string, unknown>[]) => baseManifest({ components });
+
+{
+  const r = validateTechpackYaml(yamlOf(withComps({ id: "c", description: "x", hook: { source: "a", destination: "a" }, hookInterpreter: "node" })));
+  eq("hookInterpreter without hookEvent rejected", r.errors.includes("Component 'c': hookInterpreter requires hookEvent"), true);
+}
+{
+  const r = validateTechpackYaml(yamlOf(withComps({ id: "c", description: "x", hook: { source: "a", destination: "a" }, hookMatcher: "Bash" })));
+  eq("hookMatcher without hookEvent rejected", r.errors.includes("Component 'c': hookMatcher requires hookEvent"), true);
+}
+for (const [value, expected] of [
+  ["node --experimental-strip-types", null],
+  ["/opt/homebrew/bin/bun run", null],
+  ["  uv run  ", null],
+  ["   ", "Component 'gate': hookInterpreter must not be empty — omit it to use bash"],
+  ["node\nrm -rf /", "Component 'gate': hookInterpreter must not contain control characters or line breaks (found U+000A)"],
+  ["node\t-e", "Component 'gate': hookInterpreter must not contain control characters or line breaks (found U+0009)"],
+  ["./bin/node", "Component 'gate': hookInterpreter binary './bin/node' must be a bare command name or an absolute path, without shell metacharacters"],
+  ["node;rm", "Component 'gate': hookInterpreter binary 'node;rm' must be a bare command name or an absolute path, without shell metacharacters"],
+  ["node $(x)", "Component 'gate': hookInterpreter argument '$(x)' must be a plain flag or word, without shell metacharacters — use a wrapper script for anything else"],
+  ["n".repeat(201), "Component 'gate': hookInterpreter must be at most 200 characters (got 201)"],
+] as const) {
+  const r = validateTechpackYaml(yamlOf(withComps(hookComp({ hookInterpreter: value }))));
+  eq(`hookInterpreter ${JSON.stringify(value).slice(0, 40)}`, r.errors[0] ?? null, expected);
+}
+{
+  const check = { type: "hookEventExists", name: "hook registered", event: "PreToolUse", matcher: "" };
+  const r = validateTechpackYaml(yamlOf(baseManifest({ supplementaryDoctorChecks: [check] })));
+  eq(
+    "empty hookEventExists matcher rejected",
+    r.errors,
+    ["Invalid doctor check 'hook registered': hookEventExists 'matcher' must be non-empty — omit it to skip the assertion"]
+  );
+}
+{
+  const check = { type: "hookEventExists", name: "hook registered", event: "PreToolUse", command: "" };
+  const r = validateTechpackYaml(yamlOf(withComps(hookComp({ doctorChecks: [check] }))));
+  eq("empty hookEventExists command on component check rejected", r.errors.length, 1);
+}
+{
+  const r = validateTechpackYaml(yamlOf(withComps({ id: "c", description: "x", brew: "jq", dependencies: ["missing"], isRequired: true })));
+  eq("deprecated keys do not fail validation", r.valid, true);
+}
+
+console.log("\n=== runHeuristics: mcs 2026.9 warnings ===");
+
+const noTree = tree([]);
+
+{
+  const hints = runHeuristics(withComps({ id: "t", description: "x", brew: "someone/tools/thing" }), noTree);
+  eq("third-party tap warned", hints, [
+    "Component 't' installs 'someone/tools/thing' from third-party tap 'someone/tools' — 'mcs sync' taps it without confirmation from Homebrew or mcs.",
+  ]);
+  eq("homebrew/ tap not warned", runHeuristics(withComps({ id: "t", description: "x", brew: "Homebrew/core/jq" }), noTree), []);
+  eq("URL form not warned", runHeuristics(withComps({ id: "t", description: "x", brew: "https://x/y/z" }), noTree), []);
+}
+{
+  const m = baseManifest({
+    components: [{ id: "c", description: "x", brew: "jq" }],
+    supplementaryDoctorChecks: [
+      { type: "commandExists", name: "jq", command: "jq", scope: "global", matcher: "x" },
+      { type: "settingsKeyEquals", name: "k", keyPath: "a", expectedValue: "b", scope: "project" },
+      { type: "fileExists", name: "f", path: "x", scope: "project" },
+    ],
+  });
+  eq("scope/matcher on types that ignore them", runHeuristics(m, noTree), [
+    "Doctor check 'jq' declares `scope` but type `commandExists` ignores it — `scope` only applies to checks with a `path`",
+    "Doctor check 'k' declares `scope` but type `settingsKeyEquals` ignores it — settings are resolved from the project root automatically (project settings.local.json, then global settings.json)",
+    "Doctor check 'jq' declares `matcher` but type `commandExists` ignores it — `matcher` applies only to `hookEventExists`",
+  ]);
+}
+{
+  const ts = hookComp({ hook: { source: "hooks/gate.ts", destination: "gate.ts" } });
+  eq("ambiguous .ts hook warned", runHeuristics(withComps(ts), noTree), [
+    "Hook 'gate' installs 'gate.ts' but declares no hookInterpreter — it will run under bash. TypeScript has no single default; declare one (e.g. `hookInterpreter: node --experimental-strip-types`).",
+  ]);
+  const jsDestTsSource = hookComp({ hook: { source: "hooks/gate.ts", destination: "gate.js" } });
+  eq(".js destination decides over .ts source", runHeuristics(withComps(jsDestTsSource, { id: "n", description: "x", brew: "node" }), noTree), []);
+}
+{
+  eq("node hook without brew node warned", runHeuristics(withComps(hookComp()), noTree), [
+    "Hook 'gate' uses node but no brew component installs node",
+  ]);
+  eq("tap-qualified node satisfies node hook", runHeuristics(withComps(hookComp(), { id: "n", description: "x", brew: "homebrew/core/node@22" }), noTree), []);
+  const py = hookComp({ id: "py", hook: { source: "hooks/p.py", destination: "p.py" } });
+  eq("brew python satisfies python3 hook", runHeuristics(withComps(py, { id: "b", description: "x", brew: "python@3.12" }), noTree), []);
+  const envHook = hookComp({ id: "e", hookInterpreter: "/usr/bin/env -u X FOO=1 deno run" });
+  eq("env looked through for binary", runHeuristics(withComps(envHook), noTree), ["Hook 'e' uses deno but no brew component installs deno"]);
+  const twoNode = withComps(hookComp(), hookComp({ id: "gate2", hook: { source: "hooks/b.js", destination: "b.js" } }));
+  eq("runtime warning deduped per binary", runHeuristics(twoNode, noTree).length, 1);
+  const bashHook = hookComp({ hook: { source: "hooks/x", destination: "x" } });
+  eq("extensionless hook defaults to bash, not reported", runHeuristics(withComps(bashHook), noTree), []);
+}
+{
+  const check = { type: "hookEventExists", name: "gate registered", event: "PreToolUse", command: "bash .claude/hooks/gate.js" };
+  const m = withComps(hookComp({ doctorChecks: [check] }), { id: "n", description: "x", brew: "node" });
+  eq("doctor check contradicting interpreter warned", runHeuristics(m, noTree), [
+    "Doctor check 'gate registered' asserts command 'bash .claude/hooks/gate.js' but hook 'gate' is registered with 'node' — the check will never match",
+  ]);
+  const pathOnly = { ...check, command: "gate.js" };
+  eq("path-only assertion not warned", runHeuristics(withComps(hookComp({ doctorChecks: [pathOnly] }), { id: "n", description: "x", brew: "node" }), noTree), []);
+  const unrelated = baseManifest({
+    components: [hookComp(), { id: "n", description: "x", brew: "node" }],
+    supplementaryDoctorChecks: [{ ...check, command: "bash .claude/hooks/other.sh" }],
+  });
+  eq("uncorrelated supplementary check not paired", runHeuristics(unrelated, noTree), []);
+}
+{
+  const m = baseManifest({
+    components: [{ id: "c", description: "x", brew: "jq", isRequired: true, dependencies: [] }],
+    templates: [{ sectionIdentifier: "s", contentFile: "t.md", dependencies: ["c"] }],
+  });
+  eq("deprecated keys warned on components and templates", runHeuristics(m, tree(["t.md"])), [
+    "Component 'c' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
+    "Component 'c' declares `dependencies`, which is deprecated and ignored — packs install every component, in declaration order",
+    "Template 's' declares `dependencies`, which is deprecated and ignored — packs install every component, in declaration order",
+  ]);
+}
+{
+  const mcp = (command: string) => ({ id: "srv", description: "x", mcp: { command } });
+  eq("npx satisfied by tap-qualified node", runHeuristics(withComps(mcp("npx"), { id: "n", description: "x", brew: "someone/tap/node" }), noTree).filter((h) => h.startsWith("MCP")), []);
+  eq("python3 MCP satisfied by brew python", runHeuristics(withComps(mcp("python3"), { id: "b", description: "x", brew: "python" }), noTree), []);
+  eq("python MCP gap uses mcs wording", runHeuristics(withComps(mcp("/usr/bin/python3")), noTree), [
+    "MCP server 'srv' uses python but no brew component installs python",
+  ]);
+}
+
 console.log("\n=== Built-in list drift (parity contract with mcs) ===");
 
 const REQUIRED_IGNORED_DIRS = [".git", ".github", ".gitlab", ".vscode", "node_modules", "__pycache__", ".build"];
