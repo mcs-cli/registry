@@ -3,6 +3,15 @@ import type { ExtractedPackData, ComponentCounts, ValidationResult, RepoTree } f
 import schema from "../../schema/techpack-schema.json";
 import { compileMatcher, compileAnyMatcher, type Matcher } from "./glob.js";
 import { BUILTIN_IGNORED_DIRS, BUILTIN_INFRASTRUCTURE_FILES } from "./builtinIgnore.js";
+import {
+  hookInterpreterRejectionReason,
+  interpreterBinary,
+  isAmbiguouslyTyped,
+  isCheckableBinary,
+  lastPathComponent,
+  resolveHookInterpreter,
+  tokens,
+} from "./hookInterpreter.js";
 
 const TECHPACK_MANIFEST_FILENAME = "techpack.yaml";
 
@@ -64,6 +73,10 @@ const SHORTHAND_TYPE_MAP: Record<string, string> = {
   settingsFile: "configuration",
   gitignore: "configuration",
 };
+
+const HOOK_METADATA_FIELDS = ["hookMatcher", "hookInterpreter", "hookTimeout", "hookAsync", "hookStatusMessage"] as const;
+
+const SHORTHAND_KEYS = Object.keys(SHORTHAND_TYPE_MAP);
 
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
@@ -130,22 +143,32 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
     }
 
     if (!hookEvent) {
-      if (comp.hookTimeout !== undefined) {
-        errors.push(`Component '${id}': hookTimeout requires hookEvent`);
-      }
-      if (comp.hookAsync !== undefined) {
-        errors.push(`Component '${id}': hookAsync requires hookEvent`);
-      }
-      if (comp.hookStatusMessage !== undefined) {
-        errors.push(`Component '${id}': hookStatusMessage requires hookEvent`);
+      for (const field of HOOK_METADATA_FIELDS) {
+        if (comp[field] != null) errors.push(`Component '${id}': ${field} requires hookEvent`);
       }
     }
 
     if (
-      comp.hookTimeout !== undefined &&
+      comp.hookTimeout != null &&
       (typeof comp.hookTimeout !== "number" || comp.hookTimeout <= 0)
     ) {
       errors.push(`Component '${id}': hookTimeout must be a positive integer`);
+    }
+
+    if (hookEvent && typeof comp.hookInterpreter === "string") {
+      const reason = hookInterpreterRejectionReason(comp.hookInterpreter);
+      if (reason) errors.push(`Component '${id}': ${reason}`);
+    }
+  }
+
+  for (const check of allDoctorChecks(manifest)) {
+    if (check.type !== "hookEventExists") continue;
+    for (const field of ["matcher", "command"] as const) {
+      if (check[field] === "") {
+        errors.push(
+          `Invalid doctor check '${check.name}': hookEventExists '${field}' must be non-empty — omit it to skip the assertion`
+        );
+      }
     }
   }
 
@@ -509,8 +532,14 @@ function validateComponent(comp: Record<string, unknown>, index: number, errors:
   }
 
   // hookAsync must be boolean
-  if (comp.hookAsync !== undefined && typeof comp.hookAsync !== "boolean") {
+  if (comp.hookAsync != null && typeof comp.hookAsync !== "boolean") {
     errors.push(`components[${index}].hookAsync must be a boolean`);
+  }
+
+  for (const field of ["hookMatcher", "hookStatusMessage", "hookInterpreter"] as const) {
+    if (comp[field] != null && typeof comp[field] !== "string") {
+      errors.push(`components[${index}].${field} must be a string`);
+    }
   }
 }
 
@@ -556,14 +585,18 @@ function extractPackData(
   };
 }
 
+// The shorthand mcs resolveShorthand picks, in its precedence order; its `contains` is true for an explicit null too.
+function shorthandKey(comp: Record<string, unknown>): string | undefined {
+  return SHORTHAND_KEYS.find((key) => comp[key] !== undefined);
+}
+
 function resolveComponentType(comp: Record<string, unknown>): string | null {
-  // Check shorthand keys first
-  for (const [key, type] of Object.entries(SHORTHAND_TYPE_MAP)) {
-    if (comp[key] !== undefined) {
-      // shell shorthand requires explicit type field
-      if (type === "") return typeof comp.type === "string" ? comp.type : null;
-      return type;
-    }
+  const key = shorthandKey(comp);
+  if (key !== undefined) {
+    const type = SHORTHAND_TYPE_MAP[key];
+    // shell shorthand requires explicit type field
+    if (type === "") return typeof comp.type === "string" ? comp.type : null;
+    return type;
   }
 
   // Check explicit type field
@@ -671,29 +704,284 @@ export function runHeuristics(
     pushHint(`Unreferenced file '${file}' at repository root — not referenced by any component`);
   }
 
-  // Heuristic 2: MCP server uses python/node but no matching brew package
-  const mcpComponents = components.filter((c) => {
-    const type = c.type as string | undefined;
-    return type === "mcpServer" || c.mcp !== undefined;
-  });
-  const brewIds = new Set(
-    components
-      .filter((c) => c.type === "brewPackage" || c.brew !== undefined)
-      .map((c) => c.id as string)
+  // Mirrors the rest of PackHeuristics.check, in its order; checkPythonModulePaths is not ported.
+  const resolved = components.map(resolveComponent);
+  const brewPackages = collectBrewPackages(resolved);
+  const doctorChecks = allDoctorChecks(manifest);
+  hints.push(
+    ...checkMCPDependencyGaps(resolved, brewPackages),
+    ...checkThirdPartyTaps(resolved),
+    ...checkDoctorCheckScopeUsage(doctorChecks),
+    ...checkDoctorCheckMatcherUsage(doctorChecks),
+    ...checkAmbiguousHookExtensions(resolved),
+    ...checkUninstalledHookRuntimes(resolved, brewPackages),
+    ...checkHookDoctorCheckInterpreters(manifest, resolved),
+    ...checkDeprecatedKeys(manifest, components),
   );
 
-  for (const mcp of mcpComponents) {
-    const mcpConfig = mcp.mcp as Record<string, unknown> | undefined;
-    const command = mcpConfig?.command as string | undefined;
-    if (!command) continue;
+  return hints;
+}
 
-    if ((command === "python" || command === "python3") && !brewIds.has("python") && !brewIds.has("python3")) {
-      hints.push(`MCP server '${mcp.id}' uses '${command}' but no python brew package is declared`);
-    }
-    if ((command === "node" || command === "npx") && !brewIds.has("node")) {
-      hints.push(`MCP server '${mcp.id}' uses '${command}' but no node brew package is declared`);
+type InstallAction =
+  | { kind: "brew"; package: string }
+  | { kind: "mcp"; name: string; command?: string }
+  | { kind: "copy"; source?: string; destination?: string; fileType?: string };
+
+interface HookInvocation {
+  interpreter: string;
+  explicit: boolean;
+  destination: string;
+  source?: string;
+}
+
+interface ResolvedComponent {
+  comp: Record<string, unknown>;
+  action: InstallAction | null;
+  hook: HookInvocation | null;
+}
+
+const COPY_SHORTHAND_KEYS = new Set<string>(SOURCE_SHORTHAND_KEYS);
+
+function records(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((v): v is Record<string, unknown> => !!v && typeof v === "object")
+    : [];
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function brewAction(pkg: unknown): InstallAction | null {
+  return typeof pkg === "string" ? { kind: "brew", package: pkg } : null;
+}
+
+function mcpAction(config: Record<string, unknown>, id: unknown): InstallAction {
+  return { kind: "mcp", name: optionalString(config.name) ?? String(id), command: optionalString(config.command) };
+}
+
+function copyAction(config: Record<string, unknown>, fileType: string | undefined): InstallAction {
+  return {
+    kind: "copy",
+    source: optionalString(config.source),
+    destination: optionalString(config.destination),
+    fileType,
+  };
+}
+
+function resolveInstallAction(comp: Record<string, unknown>): InstallAction | null {
+  const key = shorthandKey(comp);
+  if (key !== undefined) {
+    const value = comp[key];
+    const config = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+    switch (key) {
+      case "brew":
+        return brewAction(value);
+      case "mcp":
+        return config && mcpAction(config, comp.id);
+      default:
+        return config && COPY_SHORTHAND_KEYS.has(key) ? copyAction(config, key) : null;
     }
   }
 
-  return hints;
+  const action = comp.installAction;
+  if (!action || typeof action !== "object") return null;
+  const a = action as Record<string, unknown>;
+  switch (a.type) {
+    case "brewInstall":
+      return brewAction(a.package);
+    case "mcpServer":
+      return mcpAction(a, comp.id);
+    case "copyPackFile":
+      return copyAction(a, optionalString(a.fileType));
+    default:
+      return null;
+  }
+}
+
+// Mirrors ExternalComponentDefinition.hookInvocation. Dropping any guard reports hooks that sync never registers.
+function resolveComponent(comp: Record<string, unknown>): ResolvedComponent {
+  const action = resolveInstallAction(comp);
+  if (
+    resolveComponentType(comp) !== "hookFile" ||
+    typeof comp.hookEvent !== "string" ||
+    action?.kind !== "copy" ||
+    action.fileType !== "hook" ||
+    action.destination === undefined
+  ) {
+    return { comp, action, hook: null };
+  }
+  const { destination, source } = action;
+  const explicit = optionalString(comp.hookInterpreter);
+  const interpreter = resolveHookInterpreter(explicit, destination, source);
+  return { comp, action, hook: { interpreter, explicit: explicit !== undefined, destination, source } };
+}
+
+function allDoctorChecks(manifest: Record<string, unknown>): Array<Record<string, unknown>> {
+  return [
+    ...records(manifest.supplementaryDoctorChecks),
+    ...records(manifest.components).flatMap((c) => records(c.doctorChecks)),
+  ];
+}
+
+// Every name a formula can be matched by — `brew: owner/tap/node` must still read as installing node.
+function collectBrewPackages(resolved: ResolvedComponent[]): Set<string> {
+  const packages = new Set<string>();
+  for (const { action } of resolved) {
+    if (action?.kind !== "brew") continue;
+    packages.add(action.package);
+    packages.add(lastPathComponent(action.package));
+  }
+  return packages;
+}
+
+// The executable and its formula are not always spelled the same: python3 ships in `python`, npx in `node`.
+const FORMULA_ALIASES: Record<string, string[]> = {
+  python3: ["python"],
+  python: ["python3"],
+  npx: ["node"],
+};
+
+function installs(executable: string, packages: ReadonlySet<string>): boolean {
+  for (const formula of [executable, ...(FORMULA_ALIASES[executable] ?? [])]) {
+    if (packages.has(formula)) return true;
+    const versioned = `${formula}@`;
+    for (const p of packages) if (p.startsWith(versioned)) return true;
+  }
+  return false;
+}
+
+const MCP_RUNTIMES: Record<string, string> = { python: "python", python3: "python", node: "node", npx: "node" };
+
+function checkMCPDependencyGaps(resolved: ResolvedComponent[], brewPackages: ReadonlySet<string>): string[] {
+  const findings: string[] = [];
+  for (const { action } of resolved) {
+    if (action?.kind !== "mcp" || action.command === undefined) continue;
+    const runtime = MCP_RUNTIMES[lastPathComponent(action.command)];
+    if (runtime && !installs(runtime, brewPackages)) {
+      findings.push(`MCP server '${action.name}' uses ${runtime} but no brew component installs ${runtime}`);
+    }
+  }
+  return findings;
+}
+
+// Null for core formulae, Homebrew's own taps, and URL/path forms that also split into three parts.
+function tapReference(pkg: string): string | null {
+  if (pkg.includes(":") || pkg.startsWith("/") || pkg.startsWith(".")) return null;
+  const parts = pkg.split("/").filter((p) => p.length > 0);
+  if (parts.length !== 3 || parts[0].toLowerCase() === "homebrew") return null;
+  return `${parts[0]}/${parts[1]}`;
+}
+
+function checkThirdPartyTaps(resolved: ResolvedComponent[]): string[] {
+  const findings: string[] = [];
+  for (const { comp, action } of resolved) {
+    if (action?.kind !== "brew") continue;
+    const tap = tapReference(action.package);
+    if (!tap) continue;
+    findings.push(
+      `Component '${comp.id}' installs '${action.package}' from third-party tap '${tap}' — 'mcs sync' taps it without confirmation from Homebrew or mcs.`
+    );
+  }
+  return findings;
+}
+
+const SCOPE_HONORING_CHECK_TYPES = new Set(["fileExists", "directoryExists", "fileContains", "fileNotContains"]);
+
+function checkDoctorCheckScopeUsage(checks: Array<Record<string, unknown>>): string[] {
+  return checks
+    .filter((c) => c.scope != null && typeof c.type === "string" && !SCOPE_HONORING_CHECK_TYPES.has(c.type))
+    .map((c) => {
+      const detail = c.type === "hookEventExists" || c.type === "settingsKeyEquals"
+        ? "settings are resolved from the project root automatically (project settings.local.json, then global settings.json)"
+        : "`scope` only applies to checks with a `path`";
+      return `Doctor check '${c.name}' declares \`scope\` but type \`${c.type}\` ignores it — ${detail}`;
+    });
+}
+
+function checkDoctorCheckMatcherUsage(checks: Array<Record<string, unknown>>): string[] {
+  return checks
+    .filter((c) => c.matcher != null && typeof c.type === "string" && c.type !== "hookEventExists")
+    .map((c) =>
+      `Doctor check '${c.name}' declares \`matcher\` but type \`${c.type}\` ignores it — \`matcher\` applies only to \`hookEventExists\``
+    );
+}
+
+function checkAmbiguousHookExtensions(resolved: ResolvedComponent[]): string[] {
+  const findings: string[] = [];
+  for (const { comp, hook } of resolved) {
+    if (!hook || hook.explicit) continue;
+    if (!isAmbiguouslyTyped(hook.destination, hook.source)) continue;
+    findings.push(
+      `Hook '${comp.id}' installs '${hook.destination}' but declares no hookInterpreter — it will run under bash. TypeScript has no single default; declare one (e.g. \`hookInterpreter: node --experimental-strip-types\`).`
+    );
+  }
+  return findings;
+}
+
+function checkUninstalledHookRuntimes(resolved: ResolvedComponent[], brewPackages: ReadonlySet<string>): string[] {
+  const findings: string[] = [];
+  const reported = new Set<string>();
+  for (const { comp, hook } of resolved) {
+    if (!hook) continue;
+    const binary = interpreterBinary(hook.interpreter);
+    if (!isCheckableBinary(binary) || binary.startsWith("/") || installs(binary, brewPackages) || reported.has(binary)) continue;
+    reported.add(binary);
+    findings.push(`Hook '${comp.id}' uses ${binary} but no brew component installs ${binary}`);
+  }
+  return findings;
+}
+
+// Only an assertion naming the whole invocation (`bash .claude/hooks/gate.ts`) can contradict the hook.
+function assertedInterpreter(asserted: string, destination: string): string | null {
+  const parts = tokens(asserted);
+  let pathIndex = -1;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i].includes(destination)) {
+      pathIndex = i;
+      break;
+    }
+  }
+  if (pathIndex <= 0) return null;
+  return parts.slice(0, pathIndex).join(" ");
+}
+
+function checkHookDoctorCheckInterpreters(manifest: Record<string, unknown>, resolved: ResolvedComponent[]): string[] {
+  const supplementary = records(manifest.supplementaryDoctorChecks);
+  const findings: string[] = [];
+  for (const { comp, hook } of resolved) {
+    if (!hook) continue;
+    // Pairing every pack-level check with every hook would flag a bash assertion meant for the pack's bash hook.
+    const correlated = supplementary.filter((c) => typeof c.command === "string" && c.command.includes(hook.destination));
+    for (const check of [...records(comp.doctorChecks), ...correlated]) {
+      if (check.type !== "hookEventExists" || typeof check.command !== "string") continue;
+      const demanded = assertedInterpreter(check.command, hook.destination);
+      if (demanded === null || demanded === hook.interpreter) continue;
+      findings.push(
+        `Doctor check '${check.name}' asserts command '${check.command}' but hook '${comp.id}' is registered with '${hook.interpreter}' — the check will never match`
+      );
+    }
+  }
+  return findings;
+}
+
+const DEPRECATED_KEYS = ["isRequired", "dependencies"] as const;
+
+// `in`, not a null test: mcs checks `container.contains`, so a blank key still counts as declared.
+function checkDeprecatedKeys(manifest: Record<string, unknown>, components: Array<Record<string, unknown>>): string[] {
+  const owners: Array<[string, Record<string, unknown>]> = [
+    ...components.map((c): [string, Record<string, unknown>] => [`Component '${c.id}'`, c]),
+    ...records(manifest.templates).map((t): [string, Record<string, unknown>] => [`Template '${t.sectionIdentifier}'`, t]),
+  ];
+  const findings: string[] = [];
+  for (const [owner, obj] of owners) {
+    for (const key of DEPRECATED_KEYS) {
+      if (key in obj) {
+        findings.push(
+          `${owner} declares \`${key}\`, which is deprecated and ignored — packs install every component, in declaration order`
+        );
+      }
+    }
+  }
+  return findings;
 }

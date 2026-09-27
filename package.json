@@ -12,10 +12,10 @@
     "deploy": "npm run build:worker && wrangler pages deploy public --project-name=mcs-registry"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260708.1",
+    "@cloudflare/workers-types": "^5.20260926.1",
     "@types/js-yaml": "^4.0.9",
     "typescript": "^7.0.2",
-    "wrangler": "^4.77.0"
+    "wrangler": "^4.141.0"
   },
   "dependencies": {
     "js-yaml": "^4.1.0"
