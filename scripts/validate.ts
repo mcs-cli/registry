@@ -1,6 +1,7 @@
 /**
- * Deep validation of all registered tech packs.
- * Runs as a GitHub Actions workflow (daily + manual trigger).
+ * Validation of all registered tech packs — the only scheduled writer of each pack's
+ * status (active/invalid), warnings and validationErrors. Runs in the Reindex & Validate
+ * workflow right after the metadata reindex, so pushedAt and defaultBranch are fresh.
  *
  * Usage: npx tsx scripts/validate.ts
  *
@@ -9,9 +10,8 @@
  *   REGISTRY_URL          — Registry API base URL (e.g., https://techpacks.mcs-cli.dev)
  *   REINDEX_SECRET        — Auth token for the update-status endpoint
  */
-import { validateTechpackYaml, validateFileReferences, runHeuristics } from "../src/lib/validator.js";
-import { parseGitHubUrl } from "../src/lib/github.js";
-import type { RepoTree } from "../src/types.js";
+import { evaluatePack } from "../src/lib/packValidation.js";
+import { fetchRepoTree, fetchTechpackYaml, GitHubApiError, parseGitHubUrl } from "../src/lib/github.js";
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN ?? "";
 const REGISTRY_URL = process.env.REGISTRY_URL ?? "https://techpacks.mcs-cli.dev";
@@ -40,6 +40,7 @@ interface PackInfo {
   repoUrl: string;
   displayName: string;
   status: string;
+  defaultBranch: string;
   pushedAt: string;
   warnings?: string[];
   validationErrors?: string[];
@@ -53,67 +54,7 @@ interface ValidationReport {
   newStatus: "active" | "invalid";
   errors: string[];
   warnings: string[];
-  heuristics: string[];
   statusChanged: boolean;
-}
-
-// -- GitHub API --
-
-class RateLimitError extends Error {
-  constructor(status: number, endpoint: string) {
-    super(`GitHub API rate limited (HTTP ${status}) at ${endpoint}`);
-  }
-}
-
-function checkRateLimit(res: Response, endpoint: string): void {
-  if (res.status === 403 || res.status === 429) {
-    throw new RateLimitError(res.status, endpoint);
-  }
-}
-
-async function fetchDefaultBranch(owner: string, repo: string): Promise<string | null> {
-  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers: GH_HEADERS });
-  if (!res.ok) {
-    checkRateLimit(res, `repos/${owner}/${repo}`);
-    return null;
-  }
-  const data = (await res.json()) as { default_branch: string };
-  return data.default_branch;
-}
-
-async function fetchTechpackYaml(owner: string, repo: string, branch: string): Promise<string | null> {
-  const res = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/contents/techpack.yaml?ref=${branch}`,
-    { headers: { ...GH_HEADERS, Accept: "application/vnd.github.v3.raw" } }
-  );
-  if (!res.ok) {
-    checkRateLimit(res, `repos/${owner}/${repo}/contents`);
-    return null;
-  }
-  return res.text();
-}
-
-async function fetchRepoTree(owner: string, repo: string, branch: string): Promise<RepoTree | null> {
-  const res = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
-    { headers: GH_HEADERS }
-  );
-  if (!res.ok) {
-    checkRateLimit(res, `repos/${owner}/${repo}/git/trees`);
-    return null;
-  }
-  const json = (await res.json()) as { tree: Array<{ path: string; type: string }>; truncated: boolean };
-  if (json.truncated) {
-    console.warn(`  Tree truncated for ${owner}/${repo} — repo too large for full enumeration`);
-    return null;
-  }
-  const files = new Set<string>();
-  const directories = new Set<string>();
-  for (const entry of json.tree) {
-    if (entry.type === "blob") files.add(entry.path);
-    else if (entry.type === "tree") directories.add(entry.path);
-  }
-  return { files, directories };
 }
 
 // -- Skip logic --
@@ -134,11 +75,17 @@ function canSkipValidation(pack: PackInfo): boolean {
 
 // -- Registry API --
 
+// The listing caps `limit` at 100, so page until `total` is reached.
 async function fetchAllPacks(): Promise<PackInfo[]> {
-  const res = await fetch(`${REGISTRY_URL}/api/packs?include=all&limit=500`);
-  if (!res.ok) throw new Error(`Registry API returned HTTP ${res.status}`);
-  const data = (await res.json()) as { packs: PackInfo[] };
-  return data.packs;
+  const pageSize = 100;
+  const packs: PackInfo[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const res = await fetch(`${REGISTRY_URL}/api/packs?include=all&limit=${pageSize}&offset=${offset}`);
+    if (!res.ok) throw new Error(`Registry API returned HTTP ${res.status}`);
+    const data = (await res.json()) as { packs: PackInfo[]; total: number };
+    packs.push(...data.packs);
+    if (data.packs.length === 0 || packs.length >= data.total) return packs;
+  }
 }
 
 interface UpdateStatusPayload {
@@ -216,9 +163,6 @@ async function fileIssue(report: ValidationReport, repoUrl: string): Promise<str
   const warningList = report.warnings.length > 0
     ? `\n### Warnings\n\n${report.warnings.map((w) => `- ${w}`).join("\n")}\n`
     : "";
-  const hintList = report.heuristics.length > 0
-    ? `\n### Hints\n\n${report.heuristics.map((h) => `- ${h}`).join("\n")}\n`
-    : "";
 
   const body = `## Validation failed for ${report.displayName}
 
@@ -229,17 +173,16 @@ async function fileIssue(report: ValidationReport, repoUrl: string): Promise<str
 ### Errors
 
 ${errorList}
-${warningList}${hintList}
+${warningList}
 ### How to fix
 
-1. Check that all file paths in \`techpack.yaml\` point to files that actually exist in the repository
-2. Ensure the pack has at least one component or template
-3. Push the fix to the default branch — the registry will automatically re-validate on the next cycle
+1. Run \`mcs pack validate\` in the pack's checkout — the registry applies the same checks, so it reports the same errors
+2. Push the fix to the default branch — the registry will automatically re-validate on the next cycle
 
 Once the issues are resolved, this pack will be restored to **active** status and this issue can be closed.
 
 ---
-*Filed automatically by the [deep validation workflow](https://github.com/${REGISTRY_REPO}/actions/workflows/validate.yml)*`;
+*Filed automatically by the [Reindex & Validate workflow](https://github.com/${REGISTRY_REPO}/actions/workflows/reindex.yml)*`;
 
   return createGitHubIssue(
     `${ISSUE_TAG} ${report.slug} — validation failed`,
@@ -287,89 +230,45 @@ async function fileIssuesForNewlyInvalid(reports: ValidationReport[], packs: Pac
 // -- Main --
 
 async function validatePack(pack: PackInfo): Promise<ValidationReport> {
-  const report: ValidationReport = {
+  const parsed = parseGitHubUrl(pack.repoUrl);
+  if (!parsed) throw new Error(`Invalid repo URL '${pack.repoUrl}'`);
+  const { owner, repo } = parsed;
+
+  const [yaml, tree] = await Promise.all([
+    fetchTechpackYaml(owner, repo, pack.defaultBranch, GITHUB_TOKEN),
+    fetchRepoTree(owner, repo, pack.defaultBranch, GITHUB_TOKEN),
+  ]);
+  const evaluation = evaluatePack(yaml, tree);
+
+  return {
     slug: pack.slug,
     displayName: pack.displayName,
     previousStatus: pack.status,
-    newStatus: "active",
-    errors: [],
-    warnings: [],
-    heuristics: [],
-    statusChanged: false,
+    newStatus: evaluation.status,
+    errors: evaluation.errors,
+    warnings: evaluation.warnings,
+    statusChanged: evaluation.status !== pack.status,
   };
-
-  const parsed = parseGitHubUrl(pack.repoUrl);
-  if (!parsed) {
-    report.errors.push("Invalid repo URL");
-    report.newStatus = "invalid";
-    return report;
-  }
-  const { owner, repo } = parsed;
-
-  // Fetch default branch
-  const branch = await fetchDefaultBranch(owner, repo);
-  if (!branch) {
-    report.errors.push("Repository not found or not accessible");
-    report.newStatus = "invalid";
-    return report;
-  }
-
-  // Fetch techpack.yaml
-  const yaml = await fetchTechpackYaml(owner, repo, branch);
-  if (!yaml) {
-    report.errors.push("No techpack.yaml found at repository root");
-    report.newStatus = "invalid";
-    return report;
-  }
-
-  // Structural validation
-  const validation = validateTechpackYaml(yaml);
-  if (!validation.valid || !validation.packData) {
-    report.errors.push(...validation.errors);
-    report.newStatus = "invalid";
-    return report;
-  }
-
-  // Fetch tree
-  const tree = await fetchRepoTree(owner, repo, branch);
-  if (!tree) {
-    report.warnings.push("Could not fetch repository tree — file validation skipped");
-    return report;
-  }
-
-  // File-existence validation
-  if (validation.manifest) {
-    const fileValidation = validateFileReferences(validation.manifest, tree);
-    report.errors.push(...fileValidation.errors);
-    report.warnings.push(...fileValidation.warnings);
-  }
-
-  // Heuristic checks
-  if (validation.manifest) {
-    report.heuristics.push(...runHeuristics(validation.manifest, tree));
-  }
-
-  if (report.errors.length > 0) {
-    report.newStatus = "invalid";
-  }
-
-  return report;
 }
 
 async function main() {
-  console.log("=== MCS Registry Deep Validation ===\n");
+  console.log("=== MCS Registry Validation ===\n");
 
-  // Fetch all packs (including inactive)
   const packs = await fetchAllPacks();
-  console.log(`Found ${packs.length} packs to validate\n`);
+  console.log(`Found ${packs.length} packs\n`);
 
   const reports: ValidationReport[] = [];
-
+  const failures: Array<{ slug: string; message: string }> = [];
   let skippedCount = 0;
 
   for (const pack of packs) {
     process.stdout.write(`  ${pack.slug} ... `);
 
+    if (pack.status === "unavailable") {
+      console.log("⏭️  SKIPPED (unavailable — owned by reindex)");
+      skippedCount++;
+      continue;
+    }
     if (canSkipValidation(pack)) {
       console.log(`⏭️  SKIPPED (unchanged, no warnings)`);
       skippedCount++;
@@ -380,43 +279,26 @@ async function main() {
     try {
       report = await validatePack(pack);
     } catch (err) {
-      // Rate limit errors abort the entire run to prevent mass-invalidation
-      if (err instanceof RateLimitError) throw err;
+      // A rate limit would fail every remaining pack the same way — stop and let the next run retry.
+      if (err instanceof GitHubApiError && err.isRateLimit) throw err;
+      // Any other fetch failure says nothing about the pack, so its stored verdict stays as is.
       const message = err instanceof Error ? err.message : String(err);
-      console.log(`CRASH: ${message}`);
-      report = {
-        slug: pack.slug,
-        displayName: pack.displayName,
-        previousStatus: pack.status,
-        newStatus: "invalid",
-        errors: [`Validation crashed: ${message}`],
-        warnings: [],
-        heuristics: [],
-        statusChanged: false,
-      };
+      console.log(`⚠️  NOT VALIDATED: ${message}`);
+      failures.push({ slug: pack.slug, message });
+      continue;
     }
     reports.push(report);
 
     const icon = report.newStatus === "active" ? "✅" : "❌";
-    const extras: string[] = [];
-    if (report.warnings.length > 0) extras.push(`${report.warnings.length} warnings`);
-    if (report.heuristics.length > 0) extras.push(`${report.heuristics.length} hints`);
-    console.log(`${icon} ${report.newStatus}${extras.length > 0 ? ` (${extras.join(", ")})` : ""}`);
+    const extras = report.warnings.length > 0 ? ` (${report.warnings.length} warnings)` : "";
+    console.log(`${icon} ${report.newStatus}${extras}`);
 
-    // Detect actual status transition vs. data-only drift
-    report.statusChanged = report.newStatus !== pack.status;
-    const warningsChanged = JSON.stringify(report.warnings) !== JSON.stringify(pack.warnings ?? []);
-    const errorsChanged = JSON.stringify(report.errors) !== JSON.stringify(pack.validationErrors ?? []);
-
-    // Always update to record deepValidatedAt (and any data changes)
-    const now = new Date().toISOString();
-    const allWarnings = [...report.warnings, ...report.heuristics];
     const updated = await updatePackStatus({
       slug: report.slug,
       status: report.newStatus,
-      warnings: allWarnings,
+      warnings: report.warnings,
       validationErrors: report.errors,
-      deepValidatedAt: now,
+      deepValidatedAt: new Date().toISOString(),
     });
     if (!updated) {
       console.log(`    ⚠️  Failed to update status for ${report.slug}`);
@@ -428,17 +310,16 @@ async function main() {
   const invalid = reports.filter((r) => r.newStatus === "invalid");
   const changed = reports.filter((r) => r.statusChanged);
   const withWarnings = reports.filter((r) => r.warnings.length > 0 && r.newStatus === "active");
-  const withHeuristics = reports.filter((r) => r.heuristics.length > 0);
 
   console.log("\n=== Summary ===\n");
   console.log(`  Total:           ${packs.length}`);
   console.log(`  Skipped:         ${skippedCount}`);
   console.log(`  Validated:       ${reports.length}`);
+  console.log(`  Not validated:   ${failures.length}`);
   console.log(`  Valid:           ${valid.length}`);
   console.log(`  Invalid:         ${invalid.length}`);
   console.log(`  Status changed:  ${changed.length}`);
   console.log(`  With warnings:   ${withWarnings.length}`);
-  console.log(`  With hints:      ${withHeuristics.length}`);
 
   // File issues for newly invalid packs (before step summary so we can include links)
   const issueResults = await fileIssuesForNewlyInvalid(reports, packs);
@@ -450,16 +331,16 @@ async function main() {
 
     // Overview table
     lines.push(
-      `## Deep Validation Report\n`,
+      `## Validation Report\n`,
       `| Metric | Count |\n|--------|-------|`,
       `| Total packs | ${packs.length} |`,
-      `| Skipped (unchanged) | ${skippedCount} |`,
+      `| Skipped (unchanged or unavailable) | ${skippedCount} |`,
       `| Validated | ${reports.length} |`,
+      `| Not validated (GitHub error) | ${failures.length} |`,
       `| Active | ${valid.length} |`,
       `| Invalid | ${invalid.length} |`,
       `| Status changed | ${changed.length} |`,
-      `| With warnings | ${withWarnings.length} |`,
-      `| With hints | ${withHeuristics.length} |\n`,
+      `| With warnings | ${withWarnings.length} |\n`,
     );
 
     // Per-pack results table
@@ -470,7 +351,6 @@ async function main() {
       const issues: string[] = [];
       if (r.errors.length > 0) issues.push(`${r.errors.length} error(s)`);
       if (r.warnings.length > 0) issues.push(`${r.warnings.length} warning(s)`);
-      if (r.heuristics.length > 0) issues.push(`${r.heuristics.length} hint(s)`);
       lines.push(`| \`${r.slug}\` | ${icon}${change} | ${issues.join(", ") || "—"} |`);
     }
     lines.push("");
@@ -485,10 +365,6 @@ async function main() {
         if (r.warnings.length > 0) {
           lines.push(`\n**Warnings:**`);
           for (const w of r.warnings) lines.push(`- ${w}`);
-        }
-        if (r.heuristics.length > 0) {
-          lines.push(`\n**Hints:**`);
-          for (const h of r.heuristics) lines.push(`- ${h}`);
         }
         lines.push(`\n</details>\n`);
       }
@@ -513,14 +389,10 @@ async function main() {
       }
     }
 
-    // Heuristic hints
-    if (withHeuristics.length > 0) {
-      lines.push(`### Heuristic Hints\n`);
-      for (const r of withHeuristics) {
-        lines.push(`<details>\n<summary><b>${r.slug}</b> (${r.heuristics.length} hint${r.heuristics.length > 1 ? "s" : ""})</summary>\n`);
-        for (const h of r.heuristics) lines.push(`- ${h}`);
-        lines.push(`\n</details>\n`);
-      }
+    if (failures.length > 0) {
+      lines.push(`### Not Validated\n`, "Stored verdicts were left unchanged for these packs.\n");
+      for (const f of failures) lines.push(`- **${f.slug}**: ${f.message}`);
+      lines.push("");
     }
 
     // Filed issues
@@ -544,6 +416,8 @@ async function main() {
 
     writeFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n"), { flag: "a" });
   }
+
+  for (const f of failures) console.log(`::warning::${f.slug} not validated: ${f.message}`);
 
   // Exit with error if any status transitions to invalid
   const newlyInvalid = reports.filter((r) => r.statusChanged && r.newStatus === "invalid");

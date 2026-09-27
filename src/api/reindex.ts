@@ -1,19 +1,17 @@
 import type { Env, PackEntry } from "../types.js";
-import {
-  batchFetchRepoMetadata,
-  fetchRepoMetadata,
-  fetchTechpackYaml,
-  parseGitHubUrl,
-} from "../lib/github.js";
-import { validateTechpackYaml } from "../lib/validator.js";
-import { validatePackFiles } from "../lib/file-validation.js";
+import type { RepoMetadata } from "../types.js";
+import { batchFetchRepoMetadata, fetchRepoMetadata } from "../lib/github.js";
+
+// Reindex owns repository metadata and the `unavailable` status only. Validity (`active` /
+// `invalid`, `warnings`, `validationErrors`) is written solely by the scheduled validation
+// (scripts/validate.ts) and by submit, so no two writers disagree about the same pack.
 
 export interface ReindexResult {
   total: number;
   updated: number;
   unchanged: number;
   unavailable: number;
-  invalid: number;
+  recovered: number;
   removed: number;
   // Control-plane errors only (e.g. batch metadata fetch failed). Per-pack
   // validation failures are tracked via `invalid` and persisted to
@@ -22,14 +20,13 @@ export interface ReindexResult {
   errors: string[];
 }
 
-export async function handleReindex(env: Env, options?: { force?: boolean }): Promise<ReindexResult> {
-  const force = options?.force ?? false;
+export async function handleReindex(env: Env): Promise<ReindexResult> {
   const result: ReindexResult = {
     total: 0,
     updated: 0,
     unchanged: 0,
     unavailable: 0,
-    invalid: 0,
+    recovered: 0,
     removed: 0,
     errors: [],
   };
@@ -47,7 +44,7 @@ export async function handleReindex(env: Env, options?: { force?: boolean }): Pr
   }
 
   result.total = slugs.length;
-  console.log(`[reindex] Starting reindex of ${slugs.length} packs${force ? " (force revalidate)" : ""}`);
+  console.log(`[reindex] Starting metadata reindex of ${slugs.length} packs`);
 
   // Collect all repo URLs
   const packMap = new Map<string, PackEntry>();
@@ -100,81 +97,11 @@ export async function handleReindex(env: Env, options?: { force?: boolean }): Pr
       continue;
     }
 
-    // Update star count and metadata regardless
-    pack.stargazerCount = metadata.stargazerCount;
-    pack.defaultBranch = metadata.defaultBranch;
-    pack.latestTag = metadata.latestTag;
-
-    // Only re-fetch techpack.yaml if the repo has been pushed to since last index
-    const pushedAtChanged = pack.pushedAt !== metadata.pushedAt;
-    pack.pushedAt = metadata.pushedAt;
-
-    if (force || pushedAtChanged || pack.status !== "active") {
-      // Re-fetch and re-validate techpack.yaml
-      const parsed = parseGitHubUrl(pack.repoUrl);
-      if (!parsed) {
-        console.log(`[reindex] "${slug}" → error (invalid repo URL)`);
-        continue;
-      }
-
-      const yamlContent = await fetchTechpackYaml(
-        parsed.owner,
-        parsed.repo,
-        metadata.defaultBranch,
-        env.GITHUB_TOKEN
-      );
-
-      if (!yamlContent) {
-        pack.status = "invalid";
-        pack.indexedAt = new Date().toISOString();
-        await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-        console.log(`[reindex] "${slug}" → invalid (techpack.yaml not found)`);
-        result.invalid++;
-        continue;
-      }
-
-      const validation = validateTechpackYaml(yamlContent);
-      if (!validation.valid || !validation.packData) {
-        pack.status = "invalid";
-        pack.validationErrors = validation.errors;
-        pack.indexedAt = new Date().toISOString();
-        await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-        console.log(`[reindex] "${slug}" → invalid: ${validation.errors.join("; ")}`);
-        result.invalid++;
-        continue;
-      }
-
-      // File-existence validation
-      const fileValidation = await validatePackFiles(
-        parsed.owner, parsed.repo, metadata.defaultBranch, env.GITHUB_TOKEN, validation.manifest
-      );
-      if (fileValidation?.errors.length) {
-        pack.status = "invalid";
-        pack.validationErrors = fileValidation.errors;
-        pack.warnings = fileValidation.warnings.length > 0 ? fileValidation.warnings : undefined;
-        pack.indexedAt = new Date().toISOString();
-        await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-        console.log(`[reindex] "${slug}" → invalid: missing files: ${fileValidation.errors.join("; ")}`);
-        result.invalid++;
-        continue;
-      }
-      const fileWarnings = fileValidation?.warnings ?? [];
-
-      // Update from fresh data
-      pack.displayName = validation.packData.displayName;
-      pack.description = validation.packData.description;
-      pack.author = validation.packData.author;
-      pack.components = validation.packData.components;
-      pack.keywords = validation.packData.keywords;
-      pack.warnings = fileWarnings.length > 0 ? fileWarnings : undefined;
-      pack.validationErrors = undefined;
-      pack.status = "active";
-      console.log(`[reindex] "${slug}" → updated`);
-      result.updated++;
-    } else {
-      console.log(`[reindex] "${slug}" → unchanged (no new push)`);
-      result.unchanged++;
-    }
+    const change = applyMetadata(pack, metadata);
+    if (change === "recovered") result.recovered++;
+    if (change === "unchanged") result.unchanged++;
+    else result.updated++;
+    console.log(`[reindex] "${slug}" → ${change}`);
 
     pack.indexedAt = new Date().toISOString();
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
@@ -194,82 +121,56 @@ export async function handleReindex(env: Env, options?: { force?: boolean }): Pr
   }
 
   console.log(
-    `[reindex] Done — ${result.updated} updated, ${result.unchanged} unchanged, ${result.unavailable} unavailable, ${result.invalid} invalid, ${result.removed} removed, ${result.errors.length} errors`
+    `[reindex] Done — ${result.updated} updated, ${result.unchanged} unchanged, ${result.unavailable} unavailable, ${result.recovered} recovered, ${result.removed} removed, ${result.errors.length} errors`
   );
   return result;
 }
 
-export async function reindexSinglePack(
-  slug: string,
-  env: Env
-): Promise<void> {
-  const raw = await env.PACKS.get(`pack:${slug}`);
-  if (!raw) return;
-
-  const pack = JSON.parse(raw) as PackEntry;
-  const metadata = await fetchRepoMetadata(pack.repoUrl, env.GITHUB_TOKEN);
-
-  if (!metadata) {
-    pack.status = "unavailable";
-    pack.indexedAt = new Date().toISOString();
-    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-    return;
-  }
+/**
+ * Copies fresh repository metadata onto the pack. A pack that was unavailable and is reachable
+ * again loses its `deepValidatedAt`, so the next scheduled validation re-checks it rather than
+ * trusting a verdict recorded before the repository went away.
+ */
+function applyMetadata(pack: PackEntry, metadata: RepoMetadata): "updated" | "unchanged" | "recovered" {
+  const recovered = pack.status === "unavailable";
+  const changed =
+    pack.stargazerCount !== metadata.stargazerCount ||
+    pack.defaultBranch !== metadata.defaultBranch ||
+    pack.latestTag !== metadata.latestTag ||
+    pack.pushedAt !== metadata.pushedAt;
 
   pack.stargazerCount = metadata.stargazerCount;
   pack.defaultBranch = metadata.defaultBranch;
   pack.latestTag = metadata.latestTag;
   pack.pushedAt = metadata.pushedAt;
 
-  const parsed = parseGitHubUrl(pack.repoUrl);
-  if (!parsed) return;
+  if (recovered) {
+    pack.status = "active";
+    pack.deepValidatedAt = undefined;
+    return "recovered";
+  }
+  return changed ? "updated" : "unchanged";
+}
 
-  const yamlContent = await fetchTechpackYaml(
-    parsed.owner,
-    parsed.repo,
-    metadata.defaultBranch,
-    env.GITHUB_TOKEN
-  );
+/** Background refresh for a stale pack view; metadata only, like the scheduled reindex. */
+export async function reindexSinglePack(slug: string, env: Env): Promise<void> {
+  const raw = await env.PACKS.get(`pack:${slug}`);
+  if (!raw) return;
+  const pack = JSON.parse(raw) as PackEntry;
 
-  if (!yamlContent) {
-    pack.status = "invalid";
-    pack.indexedAt = new Date().toISOString();
-    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
+  let metadata: RepoMetadata | null;
+  try {
+    metadata = await fetchRepoMetadata(pack.repoUrl, env.GITHUB_TOKEN);
+  } catch (err) {
+    console.error(`[reindex] Single refresh of "${slug}" skipped: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
 
-  const validation = validateTechpackYaml(yamlContent);
-  if (!validation.valid || !validation.packData) {
-    pack.status = "invalid";
-    pack.validationErrors = validation.errors;
-    pack.indexedAt = new Date().toISOString();
-    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-    return;
+  if (metadata) {
+    applyMetadata(pack, metadata);
+  } else {
+    pack.status = "unavailable";
   }
-
-  // File-existence validation
-  const fileValidation = await validatePackFiles(
-    parsed.owner, parsed.repo, metadata.defaultBranch, env.GITHUB_TOKEN, validation.manifest
-  );
-  if (fileValidation?.errors.length) {
-    pack.status = "invalid";
-    pack.validationErrors = fileValidation.errors;
-    pack.warnings = fileValidation.warnings.length > 0 ? fileValidation.warnings : undefined;
-    pack.indexedAt = new Date().toISOString();
-    await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
-    return;
-  }
-  const fileWarnings = fileValidation?.warnings ?? [];
-
-  pack.displayName = validation.packData.displayName;
-  pack.description = validation.packData.description;
-  pack.author = validation.packData.author;
-  pack.components = validation.packData.components;
-  pack.keywords = validation.packData.keywords;
-  pack.warnings = fileWarnings.length > 0 ? fileWarnings : undefined;
-  pack.validationErrors = undefined;
-  pack.status = "active";
   pack.indexedAt = new Date().toISOString();
-
   await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
 }

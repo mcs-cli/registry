@@ -168,6 +168,11 @@ export async function handleUpdatePackStatus(
 
   const pack = JSON.parse(raw) as PackEntry;
 
+  // Availability belongs to reindex; a validation verdict computed before the repo vanished must not revive it.
+  if (pack.status === "unavailable" && body.status && body.status !== "unavailable") {
+    return jsonResponse({ error: `Pack '${body.slug}' is unavailable; reindex must restore it first` }, 409);
+  }
+
   if (body.status) pack.status = body.status;
   if (body.warnings !== undefined) pack.warnings = body.warnings.length > 0 ? body.warnings : undefined;
   if (body.validationErrors !== undefined) pack.validationErrors = body.validationErrors.length > 0 ? body.validationErrors : undefined;

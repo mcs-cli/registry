@@ -4,10 +4,11 @@
  *
  * Pairs with scripts/test-validation.ts (live-pack smoke). This file uses
  * synthesized inputs to exercise paths the live smoke can't reach: malformed
- * patterns, the unreferenced-hint cap, the load-bearing-file safety rule, and
- * built-in-set drift against mcs.
+ * patterns, the load-bearing-file safety rule, severities, and built-in-set
+ * drift against mcs.
  */
-import { validateTechpackYaml, runHeuristics } from "../src/lib/validator.js";
+import { validateTechpackYaml, runHeuristics as findingsOf } from "../src/lib/validator.js";
+import { evaluatePack, TREE_UNAVAILABLE_WARNING } from "../src/lib/packValidation.js";
 import { BUILTIN_IGNORED_DIRS, BUILTIN_INFRASTRUCTURE_FILES } from "../src/lib/builtinIgnore.js";
 import type { RepoTree } from "../src/types.js";
 
@@ -43,6 +44,9 @@ function tree(files: string[], dirs: string[] = []): RepoTree {
 }
 
 const yamlOf = (m: Record<string, unknown>) => JSON.stringify(m); // js-yaml accepts JSON
+
+const runHeuristics = (m: Record<string, unknown>, t: RepoTree | null): string[] =>
+  findingsOf(m, t).map((f) => f.message);
 
 console.log("=== validateTechpackYaml: ignore field ===");
 
@@ -85,7 +89,8 @@ console.log("\n=== runHeuristics ===");
   const t = tree(["hooks/handler.sh", "docs/foo.md", "docs/sub/x.md"], ["hooks", "docs", "docs/sub"]);
   const hints = runHeuristics(m, t);
   eq("docs/* silences direct child", hints.some((h) => h.includes("docs/foo.md")), false);
-  eq("docs/* does NOT silence nested (FNM_PATHNAME)", hints.some((h) => h.includes("docs/sub/x.md")), true);
+  // mcs lists one level into docs/, so docs/sub is the item docs/* is matched against.
+  eq("docs/* silences docs/sub, the item mcs lists", hints.some((h) => h.includes("docs/sub")), false);
 }
 {
   const m = baseManifest();
@@ -102,7 +107,7 @@ console.log("\n=== runHeuristics ===");
   const t = tree(["hooks/handler.sh", "extras.txt"], ["hooks"]);
   eq(
     "extras.txt root-level warning",
-    runHeuristics(m, t).some((h) => h.includes("extras.txt") && h.includes("repository root")),
+    runHeuristics(m, t).includes("extras.txt is not referenced by any component"),
     true
   );
 }
@@ -198,11 +203,20 @@ console.log("\n=== Robustness ===");
 {
   const m = baseManifest();
   const files = ["hooks/handler.sh"];
-  for (let i = 0; i < 100; i++) files.push(`extras/file${i}.txt`);
-  const t = tree(files, ["hooks", "extras"]);
-  const hints = runHeuristics(m, t);
-  eq("hints capped at 50 plus truncation marker", hints.length, 51);
-  eq("last hint is truncation marker", hints[50].includes("truncated"), true);
+  for (let i = 0; i < 100; i++) files.push(`extras/nested/file${i}.txt`);
+  const t = tree(files, ["hooks", "extras", "extras/nested"]);
+  eq("nested directory reported once, then the ignore hint", runHeuristics(m, t), [
+    "extras/nested is not referenced by any component or template",
+    "Add intentional non-material paths (docs/, examples/, assets) to the `ignore:` field in techpack.yaml to silence these warnings.",
+  ]);
+}
+{
+  const m = baseManifest();
+  const t = tree(
+    ["hooks/handler.sh", "hooks/.keep", ".DS_Store", ".claude/notes.md", ".markdownlint.json"],
+    ["hooks", ".claude"]
+  );
+  eq("hidden files and directories skipped, like .skipsHiddenFiles", runHeuristics(m, t), []);
 }
 
 console.log("\n=== validateTechpackYaml: hook metadata + doctor checks ===");
@@ -270,12 +284,7 @@ console.log("\n=== runHeuristics: mcs 2026.9 warnings ===");
 const noTree = tree([]);
 
 {
-  const hints = runHeuristics(withComps({ id: "t", description: "x", brew: "someone/tools/thing" }), noTree);
-  eq("third-party tap warned", hints, [
-    "Component 't' installs 'someone/tools/thing' from third-party tap 'someone/tools' — 'mcs sync' taps it without confirmation from Homebrew or mcs.",
-  ]);
-  eq("homebrew/ tap not warned", runHeuristics(withComps({ id: "t", description: "x", brew: "Homebrew/core/jq" }), noTree), []);
-  eq("URL form not warned", runHeuristics(withComps({ id: "t", description: "x", brew: "https://x/y/z" }), noTree), []);
+  eq("third-party tap not warned", runHeuristics(withComps({ id: "t", description: "x", brew: "someone/tools/thing" }), noTree), []);
 }
 {
   const m = baseManifest({
@@ -374,6 +383,68 @@ const noTree = tree([]);
   eq("python MCP gap uses mcs wording", runHeuristics(withComps(mcp("/usr/bin/python3")), noTree), [
     "MCP server 'srv' uses python but no brew component installs python",
   ]);
+}
+
+console.log("\n=== evaluatePack: verdicts match mcs pack validate ===");
+
+const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
+  yamlOf(baseManifest({ components: [{ id: "s", description: "x", skill: { source, destination: "s" } }], ...extra }));
+
+{
+  const t = tree(["skills/s/SKILL.md", "skills/s/LICENSE", "skills/s/README.md"], ["skills", "skills/s"]);
+  eq("LICENSE and README inside a skill directory are not reported", evaluatePack(skillPack("skills/s"), t), {
+    status: "active",
+    errors: [],
+    warnings: [],
+    packData: evaluatePack(skillPack("skills/s"), t).packData,
+  });
+}
+{
+  const r = evaluatePack(skillPack("."), tree(["SKILL.md"]));
+  eq("source '.' is an error", r.status, "invalid");
+  eq("source '.' uses mcs wording", r.errors, [
+    "Component 's' uses source '.' which copies the entire pack root (including techpack.yaml, LICENSE, README)",
+  ]);
+}
+{
+  const r = evaluatePack(skillPack("skills/missing", { ignore: ["docs/"] }), tree(["docs/x.md", "stray.txt"], ["docs"]));
+  eq("missing source stops before heuristics", r, {
+    status: "invalid",
+    errors: ["Component 's' source 'skills/missing' not found in repository"],
+    warnings: [],
+    packData: r.packData,
+  });
+}
+{
+  const r = evaluatePack(yamlOf(baseManifest({ templates: [{ sectionIdentifier: "t", contentFile: "t.md" }] })), tree(["hooks/handler.sh"], ["hooks"]));
+  eq("missing template content file is an error", r.errors, ["Template 't' contentFile 't.md' not found in repository"]);
+}
+{
+  const configureOnly = yamlOf({ ...baseManifest(), components: undefined, configureProject: { script: "configure.sh" } });
+  const r = evaluatePack(configureOnly, tree(["configure.sh"]));
+  eq("configure-only pack accepted", [r.status, r.errors], ["active", []]);
+  const empty = evaluatePack(yamlOf({ ...baseManifest(), components: [] }), tree([]));
+  eq("empty pack is an error", empty.errors, ["Pack has no components, templates, or configure script — nothing to install"]);
+}
+{
+  const settings = yamlOf(baseManifest({ components: [{ id: "cfg", description: "x", settingsFile: "config/settings.json" }] }));
+  eq("missing settings file is an error", evaluatePack(settings, tree([])).errors, [
+    "Component 'cfg' references settings file 'config/settings.json' which does not exist",
+  ]);
+}
+{
+  const mcp = { id: "srv", description: "x", mcp: { name: "srv", command: "python3", args: ["-m", "my_server"] } };
+  const brew = { id: "py", description: "x", brew: "python" };
+  const m = withComps(mcp, brew);
+  eq("python -m module without a directory warned", runHeuristics(m, tree([])), [
+    "MCP server 'srv' references module 'my_server' but my_server/ directory not found in pack",
+  ]);
+  eq("python -m module directory present", runHeuristics(m, tree(["my_server/__init__.py"], ["my_server"])).filter((h) => h.startsWith("MCP")), []);
+}
+{
+  const r = evaluatePack(yamlOf(baseManifest()), null);
+  eq("truncated tree skips file checks with one warning", [r.status, r.warnings], ["active", [TREE_UNAVAILABLE_WARNING]]);
+  eq("missing techpack.yaml", evaluatePack(null, tree([])).errors, ["No techpack.yaml found at the repository root"]);
 }
 
 console.log("\n=== Built-in list drift (parity contract with mcs) ===");

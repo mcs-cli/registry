@@ -25,9 +25,10 @@ CI auto-deploys on push to main via `.github/workflows/deploy.yml`.
 _worker.ts              → routes API traffic, falls back to env.ASSETS.fetch() for static files
 src/api/packs.ts        → GET /api/packs, GET /api/packs/github/:owner/:repo
 src/api/submit.ts       → POST /api/submit (Turnstile + honeypot + IP rate-limit)
-src/api/reindex.ts      → POST /api/reindex (auth required, batch GitHub GraphQL)
+src/api/reindex.ts      → POST /api/reindex (auth required, batch GitHub GraphQL) — metadata only
 src/lib/github.ts       → GitHub API helpers (GraphQL batch metadata, REST yaml fetch)
-src/lib/validator.ts    → Manual techpack.yaml validation (Ajv cannot be used in Workers)
+src/lib/packValidation.ts → evaluatePack(): the one verdict (status, errors, warnings) submit and scripts/validate.ts record
+src/lib/validator.ts    → Manual techpack.yaml validation + PackHeuristics port (Ajv cannot be used in Workers)
 src/lib/glob.ts         → POSIX fnmatch + dir/ shortcut — mirrors mcs Sources/mcs/Core/GlobMatcher.swift
 src/lib/builtinIgnore.ts→ BUILTIN_IGNORED_DIRS + BUILTIN_INFRASTRUCTURE_FILES — mirror mcs PackHeuristics.swift
 src/lib/turnstile.ts    → Cloudflare Turnstile verification
@@ -56,27 +57,36 @@ All routing is manual string matching in `_worker.ts → handleApiRoute()`.
 | Method | Route | Auth |
 |--------|-------|------|
 | GET | `/api/packs` | Public |
-| GET | `/api/packs/github/:owner/:repo` | Public (triggers background stale reindex if >1h old) |
+| GET | `/api/packs/github/:owner/:repo` | Public (triggers background metadata refresh if >1h old) |
 | POST | `/api/submit` | Turnstile token |
 | POST | `/api/reindex` | `Authorization: Bearer <REINDEX_SECRET>` |
+| POST | `/api/packs/update-status` | `Authorization: Bearer <REINDEX_SECRET>` (used by `scripts/validate.ts`) |
 
 ## Key Gotchas
 
 - **Ajv is banned** — Workers block `new Function()`. Validation is manual in `src/lib/validator.ts`. The JSON Schema file exists for documentation only.
-- **`glob.ts` and `builtinIgnore.ts` mirror mcs verbatim** — registry/CLI parity is the contract. The matcher must not gain `**` support and the built-in sets are exact strings (not globs). Any drift means `mcs pack validate` and the registry website disagree on the same pack.
+- **`validator.ts`, `glob.ts` and `builtinIgnore.ts` mirror mcs verbatim** — registry/CLI parity is the contract. `runHeuristics` follows `PackHeuristics.check` check for check, with the same severities and wording, and a pack is `invalid` exactly when `mcs pack validate` would exit non-zero. The matcher must not gain `**` support and the built-in sets are exact strings (not globs). Any drift means `mcs pack validate` and the registry website disagree on the same pack.
 - **`public/_worker.js` is gitignored** — must be built before deploy. If API routes return HTML instead of JSON, the Worker wasn't bundled.
 - **esbuild flags matter** — `--platform=browser` (not `neutral`) and `--conditions=workerd,worker,browser` are required.
 - **`wrangler kv` defaults to local** — always pass `--remote` for production KV operations.
 - **`wrangler-action` version** — deploy workflow sets `wranglerVersion: ""` to use the project's wrangler 4.x devDep, not the action's bundled 3.x.
 - **Do NOT add `main` to `wrangler.toml`** — it makes wrangler treat the project as a Worker instead of Pages.
 
-## Reindex Strategy
+## Reindex & Validation
 
-- **Scheduled**: GitHub Actions cron every 6h calls `POST /api/reindex`
-- **On-demand**: `handleGetPack` fires background `reindexSinglePack` via `ctx.waitUntil` if data is >1h stale
-- **Smart re-fetch**: `techpack.yaml` only re-fetched if `pushedAt` changed
+Each pack field has exactly one scheduled writer, so no job overwrites another's result:
+
+| Fields | Written by |
+|--------|-----------|
+| `stargazerCount`, `defaultBranch`, `latestTag`, `pushedAt`, `unavailable` status | `handleReindex` / `reindexSinglePack` (Worker) |
+| `active`/`invalid` status, `warnings`, `validationErrors`, `deepValidatedAt` | `scripts/validate.ts` (Actions) and `handleSubmit`, both via `evaluatePack` |
+
+- **Scheduled**: `.github/workflows/reindex.yml` runs every 6h — `POST /api/reindex` (metadata), then `scripts/validate.ts` (verdicts + issue filing for newly invalid packs). `force` revalidates every pack.
+- **On-demand**: `handleGetPack` fires a background metadata-only `reindexSinglePack` if data is >1h stale.
+- **Skip logic**: validation re-checks a pack only when it was pushed since `deepValidatedAt`, carries warnings/errors, or is not active.
+- **Transient GitHub failures never become verdicts**: `fetchTechpackYaml` returns null only on 404, `fetchRepoTree` only on truncation; anything else throws and the stored verdict is kept.
 - **Batch GraphQL**: Up to 50 repos per GitHub API call
-- **Pack statuses**: `active | unavailable | invalid` — `unavailable` packs are pruned from `index:all` (KV entry kept, filtered from listing). `invalid` packs stay in `index:all` and render at the bottom of the grid with a red banner; the pack modal exposes a "Report issue" button that builds a prefilled GitHub issue URL. See `.claude/memories/decision_architecture_reindex_pruning_and_recovery.md`.
+- **Pack statuses**: `active | unavailable | invalid` — `unavailable` packs are pruned from `index:all` (KV entry kept, filtered from listing), and `update-status` refuses to revive one. A pack that becomes reachable again is restored to `active` with `deepValidatedAt` cleared so the next validation re-checks it. `invalid` packs stay in `index:all` and render at the bottom of the grid with a red banner; the pack modal exposes a "Report issue" button that builds a prefilled GitHub issue URL.
 
 ## Secrets
 

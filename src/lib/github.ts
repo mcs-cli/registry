@@ -11,6 +11,17 @@ const REPO_FIELDS_FRAGMENT = `
   }
 `;
 
+/** A GitHub response that says nothing about the repository itself (rate limit, outage). */
+export class GitHubApiError extends Error {
+  constructor(readonly status: number, endpoint: string) {
+    super(`GitHub API HTTP ${status} at ${endpoint}`);
+  }
+
+  get isRateLimit(): boolean {
+    return this.status === 403 || this.status === 429;
+  }
+}
+
 export function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
   const cleaned = url.replace(/\.git$/, "").replace(/\/$/, "");
   const match = cleaned.match(/github\.com\/([^/]+)\/([^/]+)/);
@@ -43,11 +54,16 @@ export async function fetchRepoMetadata(
     body: JSON.stringify({ query }),
   });
 
-  if (!response.ok) return null;
+  // Only a null repository means "gone"; anything else would mark a live pack unavailable.
+  if (!response.ok) throw new GitHubApiError(response.status, "graphql");
 
   const json = (await response.json()) as GraphQLResponse<{
     repository: RawRepoData | null;
   }>;
+  if (!json.data) {
+    const msg = json.errors?.map((e) => e.message).join("; ") ?? "no data";
+    if (!json.errors?.some((e) => e.type === "NOT_FOUND")) throw new Error(`GitHub GraphQL error: ${msg}`);
+  }
 
   const repo = json.data?.repository;
   if (!repo) return null;
@@ -130,10 +146,12 @@ export async function fetchTechpackYaml(
     },
   });
 
-  if (!response.ok) return null;
+  if (response.status === 404) return null;
+  if (!response.ok) throw new GitHubApiError(response.status, `repos/${owner}/${repo}/contents/techpack.yaml`);
   return response.text();
 }
 
+/** Null only when GitHub truncated the tree; a failed request throws. */
 export async function fetchRepoTree(
   owner: string,
   repo: string,
@@ -149,10 +167,7 @@ export async function fetchRepoTree(
     },
   });
 
-  if (!response.ok) {
-    console.log(`[github] Tree fetch failed for ${owner}/${repo}@${branch}: HTTP ${response.status}`);
-    return null;
-  }
+  if (!response.ok) throw new GitHubApiError(response.status, `repos/${owner}/${repo}/git/trees`);
 
   const json = (await response.json()) as GitTreeResponse;
 
@@ -169,7 +184,8 @@ export async function fetchRepoTree(
   for (const entry of json.tree) {
     if (entry.type === "blob") {
       files.add(entry.path);
-    } else if (entry.type === "tree") {
+    } else if (entry.type === "tree" || entry.type === "commit") {
+      // A submodule is a directory in the checkout mcs validates.
       directories.add(entry.path);
     }
   }
@@ -195,7 +211,7 @@ interface GitTreeResponse {
 
 interface GraphQLResponse<T> {
   data?: T;
-  errors?: Array<{ message: string }>;
+  errors?: Array<{ message: string; type?: string }>;
 }
 
 function mapRepoData(
