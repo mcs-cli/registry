@@ -306,20 +306,20 @@ const noTree = tree([]);
 {
   const ts = hookComp({ hook: { source: "hooks/gate.ts", destination: "gate.ts" } });
   eq("ambiguous .ts hook warned", messagesOf(withComps(ts), noTree), [
-    "Hook 'gate' installs 'gate.ts' but declares no hookInterpreter — it will run under bash. TypeScript has no single default; declare one (e.g. `hookInterpreter: node --experimental-strip-types`).",
+    "Hook 'test.gate' installs 'gate.ts' but declares no hookInterpreter — it will run under bash. TypeScript has no single default; declare one (e.g. `hookInterpreter: node --experimental-strip-types`).",
   ]);
   const jsDestTsSource = hookComp({ hook: { source: "hooks/gate.ts", destination: "gate.js" } });
   eq(".js destination decides over .ts source", messagesOf(withComps(jsDestTsSource, { id: "n", description: "x", brew: "node" }), noTree), []);
 }
 {
   eq("node hook without brew node warned", messagesOf(withComps(hookComp()), noTree), [
-    "Hook 'gate' uses node but no brew component installs node",
+    "Hook 'test.gate' uses node but no brew component installs node",
   ]);
   eq("tap-qualified node satisfies node hook", messagesOf(withComps(hookComp(), { id: "n", description: "x", brew: "homebrew/core/node@22" }), noTree), []);
   const py = hookComp({ id: "py", hook: { source: "hooks/p.py", destination: "p.py" } });
   eq("brew python satisfies python3 hook", messagesOf(withComps(py, { id: "b", description: "x", brew: "python@3.12" }), noTree), []);
   const envHook = hookComp({ id: "e", hookInterpreter: "/usr/bin/env -u X FOO=1 deno run" });
-  eq("env looked through for binary", messagesOf(withComps(envHook), noTree), ["Hook 'e' uses deno but no brew component installs deno"]);
+  eq("env looked through for binary", messagesOf(withComps(envHook), noTree), ["Hook 'test.e' uses deno but no brew component installs deno"]);
   const twoNode = withComps(hookComp(), hookComp({ id: "gate2", hook: { source: "hooks/b.js", destination: "b.js" } }));
   eq("runtime warning deduped per binary", messagesOf(twoNode, noTree).length, 1);
   const bashHook = hookComp({ hook: { source: "hooks/x", destination: "x" } });
@@ -329,7 +329,7 @@ const noTree = tree([]);
   const check = { type: "hookEventExists", name: "gate registered", event: "PreToolUse", command: "bash .claude/hooks/gate.js" };
   const m = withComps(hookComp({ doctorChecks: [check] }), { id: "n", description: "x", brew: "node" });
   eq("doctor check contradicting interpreter warned", messagesOf(m, noTree), [
-    "Doctor check 'gate registered' asserts command 'bash .claude/hooks/gate.js' but hook 'gate' is registered with 'node' — the check will never match",
+    "Doctor check 'gate registered' asserts command 'bash .claude/hooks/gate.js' but hook 'test.gate' is registered with 'node' — the check will never match",
   ]);
   const pathOnly = { ...check, command: "gate.js" };
   eq("path-only assertion not warned", messagesOf(withComps(hookComp({ doctorChecks: [pathOnly] }), { id: "n", description: "x", brew: "node" }), noTree), []);
@@ -347,7 +347,7 @@ const noTree = tree([]);
     hookEvent: "Stop",
     installAction: { type: "copyPackFile", source: "hooks/v.js", destination: "v.js", fileType: "hook" },
   };
-  eq("long-form copyPackFile hook resolved", messagesOf(withComps(verboseHook), noTree), ["Hook 'v' uses node but no brew component installs node"]);
+  eq("long-form copyPackFile hook resolved", messagesOf(withComps(verboseHook), noTree), ["Hook 'test.v' uses node but no brew component installs node"]);
   const verboseBrew = { id: "b", description: "x", type: "brewPackage", installAction: { type: "brewInstall", package: "node" } };
   eq("long-form brewInstall satisfies runtime", messagesOf(withComps(verboseHook, verboseBrew), noTree), []);
   const verboseMcp = { id: "m", description: "x", type: "mcpServer", installAction: { type: "mcpServer", name: "srv", command: "npx" } };
@@ -360,9 +360,9 @@ const noTree = tree([]);
   eq("fileType other than hook ignored", messagesOf(withComps(genericFile), noTree), []);
 
   const via = (source: string, destination: string) => messagesOf(withComps(hookComp({ hook: { source, destination } })), noTree);
-  eq("extensionless destination falls back to .py source", via("hooks/p.py", "p"), ["Hook 'gate' uses python3 but no brew component installs python3"]);
+  eq("extensionless destination falls back to .py source", via("hooks/p.py", "p"), ["Hook 'test.gate' uses python3 but no brew component installs python3"]);
   eq("unknown destination extension does not fall back", via("hooks/p.py", "p.bin"), []);
-  eq("extension match is case-insensitive", via("hooks/g.JS", "g.JS"), ["Hook 'gate' uses node but no brew component installs node"]);
+  eq("extension match is case-insensitive", via("hooks/g.JS", "g.JS"), ["Hook 'test.gate' uses node but no brew component installs node"]);
 }
 {
   const m = baseManifest({
@@ -370,13 +370,20 @@ const noTree = tree([]);
     templates: [{ sectionIdentifier: "s", contentFile: "t.md", dependencies: ["c"], isRequired: false }],
   });
   eq("deprecated keys warned on components and templates", messagesOf(m, tree(["t.md"])), [
-    "Component 'c' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
-    "Component 'c' declares `dependencies`, which is deprecated and ignored — packs install every component, in declaration order",
-    "Template 's' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
-    "Template 's' declares `dependencies`, which is deprecated and ignored — packs install every component, in declaration order",
+    "Component 'test.c' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
+    "Component 'test.c' declares `dependencies`, which is deprecated and ignored — packs install every component, in declaration order",
+    "Template 'test.s' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
+    "Template 'test.s' declares `dependencies`, which is deprecated and ignored — packs install every component, in declaration order",
   ]);
   const r = validateTechpackYaml(yamlOf(withComps({ id: "c", description: "x", brew: "jq", dependencies: ["missing"], isRequired: true })));
   eq("deprecated keys do not fail validation", r.errors, []);
+}
+{
+  const m = { ...withComps({ id: "c", description: "x", brew: "jq", isRequired: true }), identifier: "acme" };
+  eq("findings name components by <identifier>.<id>, as mcs does", messagesOf(m, noTree), [
+    "Component 'acme.c' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
+  ]);
+  eq("normalizing for findings leaves the manifest untouched", (m.components as Array<{ id: string }>)[0].id, "c");
 }
 {
   const mcp = (command: string) => ({ id: "srv", description: "x", mcp: { command } });
@@ -413,7 +420,7 @@ const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
   const r = evaluatePack(skillPack("."), tree(["SKILL.md"]));
   eq("source '.' is an error", r.status, "invalid");
   eq("source '.' uses mcs wording", r.errors, [
-    "Component 's' uses source '.' which copies the entire pack root (including techpack.yaml, LICENSE, README)",
+    "Component 'test.s' uses source '.' which copies the entire pack root (including techpack.yaml, LICENSE, README)",
   ]);
 }
 {
@@ -439,7 +446,7 @@ const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
 {
   const settings = yamlOf(baseManifest({ components: [{ id: "cfg", description: "x", settingsFile: "config/settings.json" }] }));
   eq("missing settings file is an error", evaluatePack(settings, tree([])).errors, [
-    "Component 'cfg' references settings file 'config/settings.json' which does not exist",
+    "Component 'test.cfg' references settings file 'config/settings.json' which does not exist",
   ]);
 }
 {

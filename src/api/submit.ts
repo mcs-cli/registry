@@ -145,7 +145,7 @@ export async function handleSubmit(
     status: "active",
     indexedAt: now,
     warnings: evaluation.warnings.length > 0 ? evaluation.warnings : undefined,
-    // This is the same verdict the scheduled validation would record, so it can skip the pack until the next push.
+    // No validatorVersion: the Worker cannot digest the validator sources, so the next scheduled run re-checks the pack once.
     deepValidatedAt: now,
   };
 

@@ -577,9 +577,11 @@ const warning = (message: string): Finding => ({ severity: "warning", message })
 const IGNORE_HINT =
   "Add intentional non-material paths (docs/, examples/, assets) to the `ignore:` field in techpack.yaml to silence these warnings.";
 
-// Mirrors mcs PackHeuristics.check, check for check and in its order — except checkThirdPartyTaps,
-// which mcs keeps CLI-only: here it would flag a legitimate tap permanently, with no `ignore:` escape.
-export function runHeuristics(manifest: Record<string, unknown>, tree: RepoTree): Finding[] {
+// Mirrors mcs PackHeuristics.check (Sources/mcs/ExternalPack/PackHeuristics.swift), check for check
+// and in its order. checkThirdPartyTaps is left out on purpose: it is CLI-only advice, and here it
+// would flag legitimate tap packs forever and file a validation issue that `ignore:` cannot silence.
+export function runHeuristics(rawManifest: Record<string, unknown>, tree: RepoTree): Finding[] {
+  const manifest = normalizedManifest(rawManifest);
   const components = records(manifest.components);
   const resolved = components.map(resolveComponent);
   const brewPackages = collectBrewPackages(resolved);
@@ -602,6 +604,19 @@ export function runHeuristics(manifest: Record<string, unknown>, tree: RepoTree)
   ];
   if (unreferenced.length > 0) findings.push(warning(IGNORE_HINT));
   return findings;
+}
+
+// Mirrors ExternalPackManifest.normalized(): mcs checks the pack with every component and template
+// id prefixed by the pack identifier, so its findings name `<identifier>.<id>`.
+function normalizedManifest(manifest: Record<string, unknown>): Record<string, unknown> {
+  const prefix = `${manifest.identifier}.`;
+  const withPrefix = (key: string) => (entry: Record<string, unknown>) =>
+    typeof entry[key] === "string" ? { ...entry, [key]: prefix + entry[key] } : entry;
+  return {
+    ...manifest,
+    components: records(manifest.components).map(withPrefix("id")),
+    templates: records(manifest.templates).map(withPrefix("sectionIdentifier")),
+  };
 }
 
 function checkEmptyPack(manifest: Record<string, unknown>): Finding[] {

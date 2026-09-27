@@ -16,6 +16,7 @@ export interface PackEntry {
   warnings?: string[];
   validationErrors?: string[];
   deepValidatedAt?: string;
+  validatorVersion?: string;
 }
 
 export type PackStatus = "active" | "unavailable" | "invalid";

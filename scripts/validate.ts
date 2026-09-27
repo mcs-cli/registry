@@ -10,6 +10,8 @@
  *   REGISTRY_URL          — Registry API base URL (e.g., https://techpacks.mcs-cli.dev)
  *   REINDEX_SECRET        — Auth token for the update-status endpoint
  */
+import { createHash } from "crypto";
+import { readdirSync, readFileSync } from "fs";
 import { evaluateRepo } from "../src/lib/packValidation.js";
 import type { ExtractedPackData } from "../src/types.js";
 import { GitHubApiError, parseGitHubUrl } from "../src/lib/github.js";
@@ -44,6 +46,7 @@ interface PackInfo {
   defaultBranch: string;
   pushedAt: string;
   deepValidatedAt?: string;
+  validatorVersion?: string;
 }
 
 interface ValidationReport {
@@ -61,10 +64,25 @@ interface ValidationReport {
 
 const FORCE_ALL = process.env.FORCE_ALL === "true";
 
-// A verdict depends only on the pushed content and the validator, so an unpushed pack keeps its
-// verdict whatever it says; after a validator change, run with `force` to re-check every pack.
+// A digest rather than a hand-bumped number, so no validator change can ship without re-checking every pack.
+const VALIDATOR_VERSION = validatorDigest();
+
+function validatorDigest(): string {
+  const root = new URL("../", import.meta.url);
+  const sources = [
+    ...readdirSync(new URL("src/lib/", root)).filter((f) => f.endsWith(".ts")).sort().map((f) => `src/lib/${f}`),
+    "schema/techpack-schema.json",
+  ];
+  const hash = createHash("sha256");
+  for (const path of sources) hash.update(path).update("\0").update(readFileSync(new URL(path, root))).update("\0");
+  return hash.digest("hex").slice(0, 16);
+}
+
+// A verdict depends only on the pushed content and the validator, so a pack is re-checked only
+// when either has changed since its last verdict.
 function canSkipValidation(pack: PackInfo): boolean {
   if (FORCE_ALL || !pack.deepValidatedAt || !pack.pushedAt) return false;
+  if (pack.validatorVersion !== VALIDATOR_VERSION) return false;
   return new Date(pack.pushedAt).getTime() <= new Date(pack.deepValidatedAt).getTime();
 }
 
@@ -89,6 +107,7 @@ interface UpdateStatusPayload {
   warnings: string[];
   validationErrors: string[];
   deepValidatedAt: string;
+  validatorVersion: string;
   packData?: ExtractedPackData;
 }
 
@@ -196,6 +215,10 @@ async function fileIssuesForNewlyInvalid(reports: ValidationReport[], packs: Pac
   const results: IssueResult[] = [];
   const newlyInvalid = reports.filter((r) => r.statusChanged && r.newStatus === "invalid");
   if (newlyInvalid.length === 0) return results;
+  if (!REINDEX_SECRET) {
+    console.log(`\n[dry-run] Would file issues for ${newlyInvalid.length} newly invalid pack(s)`);
+    return results;
+  }
 
   console.log(`\nFiling issues for ${newlyInvalid.length} newly invalid pack(s)...`);
 
@@ -291,6 +314,7 @@ async function main() {
       warnings: report.warnings,
       validationErrors: report.errors,
       deepValidatedAt: new Date().toISOString(),
+      validatorVersion: VALIDATOR_VERSION,
       packData: report.packData,
     });
     if (!updated) {

@@ -140,6 +140,7 @@ export interface UpdatePackStatusRequest {
   warnings?: string[];
   validationErrors?: string[];
   deepValidatedAt?: string;
+  validatorVersion?: string;
   // What the manifest says about the pack (name, description, counts, keywords), as of this verdict.
   packData?: ExtractedPackData;
 }
@@ -180,6 +181,7 @@ export async function handleUpdatePackStatus(
   if (body.warnings !== undefined) pack.warnings = body.warnings.length > 0 ? body.warnings : undefined;
   if (body.validationErrors !== undefined) pack.validationErrors = body.validationErrors.length > 0 ? body.validationErrors : undefined;
   if (body.deepValidatedAt !== undefined) pack.deepValidatedAt = body.deepValidatedAt;
+  if (body.validatorVersion !== undefined) pack.validatorVersion = body.validatorVersion;
   if (body.packData && typeof body.packData === "object") {
     const { identifier, displayName, description, author, components, keywords } = body.packData;
     Object.assign(pack, { identifier, displayName, description, author, components, keywords });
