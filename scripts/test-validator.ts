@@ -285,6 +285,7 @@ console.log("\n=== runHeuristics: mcs 2026.9 warnings ===");
 const noTree = tree([]);
 
 {
+  // mcs keeps this warning CLI-only; the registry must not port it.
   eq("third-party tap not warned", messagesOf(withComps({ id: "t", description: "x", brew: "someone/tools/thing" }), noTree), []);
 }
 {

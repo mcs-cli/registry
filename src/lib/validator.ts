@@ -577,7 +577,8 @@ const warning = (message: string): Finding => ({ severity: "warning", message })
 const IGNORE_HINT =
   "Add intentional non-material paths (docs/, examples/, assets) to the `ignore:` field in techpack.yaml to silence these warnings.";
 
-// Mirrors mcs PackHeuristics.check, check for check and in its order.
+// Mirrors mcs PackHeuristics.check, check for check and in its order — except checkThirdPartyTaps,
+// which mcs keeps CLI-only: here it would flag a legitimate tap permanently, with no `ignore:` escape.
 export function runHeuristics(manifest: Record<string, unknown>, tree: RepoTree): Finding[] {
   const components = records(manifest.components);
   const resolved = components.map(resolveComponent);

@@ -66,7 +66,7 @@ All routing is manual string matching in `_worker.ts → handleApiRoute()`.
 ## Key Gotchas
 
 - **Ajv is banned** — Workers block `new Function()`. Validation is manual in `src/lib/validator.ts`. The JSON Schema file exists for documentation only.
-- **`validator.ts`, `glob.ts` and `builtinIgnore.ts` mirror mcs verbatim** — registry/CLI parity is the contract. `runHeuristics` follows `PackHeuristics.check` check for check, with the same severities and wording, and a pack is `invalid` exactly when `mcs pack validate` would exit non-zero. The matcher must not gain `**` support and the built-in sets are exact strings (not globs). Any drift means `mcs pack validate` and the registry website disagree on the same pack.
+- **`validator.ts`, `glob.ts` and `builtinIgnore.ts` mirror mcs verbatim** — registry/CLI parity is the contract. `runHeuristics` follows `PackHeuristics.check` check for check, with the same severities and wording, and a pack is `invalid` exactly when `mcs pack validate` would exit non-zero. The one deliberate exception is mcs's third-party-tap warning, which is CLI-only (see the comment on `checkThirdPartyTaps` in mcs) and must not be ported. The matcher must not gain `**` support and the built-in sets are exact strings (not globs). Any drift means `mcs pack validate` and the registry website disagree on the same pack.
 - **`public/_worker.js` is gitignored** — must be built before deploy. If API routes return HTML instead of JSON, the Worker wasn't bundled.
 - **esbuild flags matter** — `--platform=browser` (not `neutral`) and `--conditions=workerd,worker,browser` are required.
 - **`wrangler kv` defaults to local** — always pass `--remote` for production KV operations.
