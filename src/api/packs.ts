@@ -1,5 +1,6 @@
 import type { Env, PackEntry } from "../types.js";
 import { reindexSinglePack } from "./reindex.js";
+import { reconcileIndex } from "../lib/packIndex.js";
 
 export async function handleListPacks(
   request: Request,
@@ -180,20 +181,7 @@ export async function handleUpdatePackStatus(
   pack.indexedAt = new Date().toISOString();
 
   await env.PACKS.put(`pack:${pack.slug}`, JSON.stringify(pack));
-
-  // Update index: add if active, remove if not
-  const indexRaw = await env.PACKS.get("index:all");
-  const slugs: string[] = indexRaw ? JSON.parse(indexRaw) : [];
-  const inIndex = slugs.includes(pack.slug);
-
-  if (pack.status === "active" && !inIndex) {
-    slugs.push(pack.slug);
-    slugs.sort();
-    await env.PACKS.put("index:all", JSON.stringify(slugs));
-  } else if (pack.status === "unavailable" && inIndex) {
-    const filtered = slugs.filter((s) => s !== pack.slug);
-    await env.PACKS.put("index:all", JSON.stringify(filtered));
-  }
+  await reconcileIndex(env, pack);
 
   return jsonResponse({ success: true, pack });
 }

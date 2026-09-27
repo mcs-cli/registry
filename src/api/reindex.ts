@@ -1,6 +1,6 @@
-import type { Env, PackEntry } from "../types.js";
-import type { RepoMetadata } from "../types.js";
+import type { Env, PackEntry, RepoMetadata } from "../types.js";
 import { batchFetchRepoMetadata, fetchRepoMetadata } from "../lib/github.js";
+import { reconcileIndex } from "../lib/packIndex.js";
 
 // Reindex owns repository metadata and the `unavailable` status only. Validity (`active` /
 // `invalid`, `warnings`, `validationErrors`) is written solely by the scheduled validation
@@ -13,10 +13,7 @@ export interface ReindexResult {
   unavailable: number;
   recovered: number;
   removed: number;
-  // Control-plane errors only (e.g. batch metadata fetch failed). Per-pack
-  // validation failures are tracked via `invalid` and persisted to
-  // `pack.validationErrors`; they must NOT be pushed here, or the workflow's
-  // `error_count != 0` hard-fail trips on routine bad manifests.
+  // Control-plane errors only (e.g. batch metadata fetch failed); the workflow hard-fails on any.
   errors: string[];
 }
 
@@ -98,11 +95,14 @@ export async function handleReindex(env: Env): Promise<ReindexResult> {
     }
 
     const change = applyMetadata(pack, metadata);
-    if (change === "recovered") result.recovered++;
-    if (change === "unchanged") result.unchanged++;
-    else result.updated++;
     console.log(`[reindex] "${slug}" → ${change}`);
-
+    if (change === "unchanged") {
+      // Skipping the write keeps KV writes proportional to change (free tier: 1,000/day).
+      result.unchanged++;
+      continue;
+    }
+    if (change === "recovered") result.recovered++;
+    result.updated++;
     pack.indexedAt = new Date().toISOString();
     await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
   }
@@ -173,4 +173,5 @@ export async function reindexSinglePack(slug: string, env: Env): Promise<void> {
   }
   pack.indexedAt = new Date().toISOString();
   await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
+  await reconcileIndex(env, pack);
 }

@@ -1,7 +1,8 @@
-import type { Env, PackEntry, SubmitRequest } from "../types.js";
-import { fetchRepoMetadata, fetchRepoTree, fetchTechpackYaml, parseGitHubUrl } from "../lib/github.js";
+import type { Env, PackEntry, RepoMetadata, SubmitRequest } from "../types.js";
+import { fetchRepoMetadata, parseGitHubUrl } from "../lib/github.js";
 import { verifyTurnstile } from "../lib/turnstile.js";
-import { evaluatePack } from "../lib/packValidation.js";
+import { evaluateRepo, type PackEvaluation } from "../lib/packValidation.js";
+import { reconcileIndex } from "../lib/packIndex.js";
 import { jsonResponse } from "./packs.js";
 
 const MAX_SUBMISSIONS_PER_HOUR = 5;
@@ -91,8 +92,8 @@ export async function handleSubmit(
     // Non-active pack — allow re-submission, will be overwritten below
   }
 
-  let evaluation: ReturnType<typeof evaluatePack>;
-  let metadata: Awaited<ReturnType<typeof fetchRepoMetadata>>;
+  let evaluation: PackEvaluation;
+  let metadata: RepoMetadata | null;
   try {
     metadata = await fetchRepoMetadata(repoUrl, env.GITHUB_TOKEN);
     if (!metadata) {
@@ -101,11 +102,7 @@ export async function handleSubmit(
         400
       );
     }
-    const [yamlContent, repoTree] = await Promise.all([
-      fetchTechpackYaml(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
-      fetchRepoTree(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN),
-    ]);
-    evaluation = evaluatePack(yamlContent, repoTree);
+    evaluation = await evaluateRepo(metadata.owner, metadata.repo, metadata.defaultBranch, env.GITHUB_TOKEN);
   } catch (err) {
     console.error(`[submit] GitHub fetch failed for ${repoUrl}: ${err instanceof Error ? err.message : String(err)}`);
     return jsonResponse({ error: "Could not reach GitHub to validate the repository. Please try again later." }, 502);
@@ -155,14 +152,7 @@ export async function handleSubmit(
   // Store in KV
   await env.PACKS.put(`pack:${slug}`, JSON.stringify(pack));
 
-  // Update index list
-  const indexRaw = await env.PACKS.get("index:all");
-  const slugs: string[] = indexRaw ? JSON.parse(indexRaw) : [];
-  if (!slugs.includes(slug)) {
-    slugs.push(slug);
-    slugs.sort();
-    await env.PACKS.put("index:all", JSON.stringify(slugs));
-  }
+  await reconcileIndex(env, pack);
 
   // Increment rate limit counter
   await incrementRateLimit(ip, env);

@@ -44,7 +44,6 @@ export interface RepoMetadata {
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
-  warnings: string[];
   packData?: ExtractedPackData;
   manifest?: Record<string, unknown>;
 }

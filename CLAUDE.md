@@ -27,7 +27,8 @@ src/api/packs.ts        → GET /api/packs, GET /api/packs/github/:owner/:repo
 src/api/submit.ts       → POST /api/submit (Turnstile + honeypot + IP rate-limit)
 src/api/reindex.ts      → POST /api/reindex (auth required, batch GitHub GraphQL) — metadata only
 src/lib/github.ts       → GitHub API helpers (GraphQL batch metadata, REST yaml fetch)
-src/lib/packValidation.ts → evaluatePack(): the one verdict (status, errors, warnings) submit and scripts/validate.ts record
+src/lib/packValidation.ts → evaluatePack()/evaluateRepo(): the one verdict (status, errors, warnings) submit and scripts/validate.ts record
+src/lib/packIndex.ts    → reconcileIndex(): keeps index:all in step with a written pack
 src/lib/validator.ts    → Manual techpack.yaml validation + PackHeuristics port (Ajv cannot be used in Workers)
 src/lib/glob.ts         → POSIX fnmatch + dir/ shortcut — mirrors mcs Sources/mcs/Core/GlobMatcher.swift
 src/lib/builtinIgnore.ts→ BUILTIN_IGNORED_DIRS + BUILTIN_INFRASTRUCTURE_FILES — mirror mcs PackHeuristics.swift
@@ -83,8 +84,9 @@ Each pack field has exactly one scheduled writer, so no job overwrites another's
 
 - **Scheduled**: `.github/workflows/reindex.yml` runs every 6h — `POST /api/reindex` (metadata), then `scripts/validate.ts` (verdicts + issue filing for newly invalid packs). `force` revalidates every pack.
 - **On-demand**: `handleGetPack` fires a background metadata-only `reindexSinglePack` if data is >1h stale.
-- **Skip logic**: validation re-checks a pack only when it was pushed since `deepValidatedAt`, carries warnings/errors, or is not active.
-- **Transient GitHub failures never become verdicts**: `fetchTechpackYaml` returns null only on 404, `fetchRepoTree` only on truncation; anything else throws and the stored verdict is kept.
+- **Skip logic**: validation re-checks a pack only when it was pushed since `deepValidatedAt` (or has none). After changing the validator, run the workflow with `force`.
+- **Transient GitHub failures never become verdicts**: `fetchTechpackYaml` returns null only on 404, `fetchRepoTree` only on truncation, and a repo is "gone" only when GraphQL says `NOT_FOUND`; anything else throws and the stored state is kept.
+- **Index membership**: `reconcileIndex` (`src/lib/packIndex.ts`) is the one place `index:all` gains or loses a single pack; call it after writing a pack whose status may have changed.
 - **Batch GraphQL**: Up to 50 repos per GitHub API call
 - **Pack statuses**: `active | unavailable | invalid` — `unavailable` packs are pruned from `index:all` (KV entry kept, filtered from listing), and `update-status` refuses to revive one. A pack that becomes reachable again is restored to `active` with `deepValidatedAt` cleared so the next validation re-checks it. `invalid` packs stay in `index:all` and render at the bottom of the grid with a red banner; the pack modal exposes a "Report issue" button that builds a prefilled GitHub issue URL.
 

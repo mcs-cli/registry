@@ -33,44 +33,15 @@ export async function fetchRepoMetadata(
   repoUrl: string,
   token: string
 ): Promise<RepoMetadata | null> {
-  const parsed = parseGitHubUrl(repoUrl);
-  if (!parsed) return null;
-
-  const query = `
-    query {
-      repository(owner: "${parsed.owner}", name: "${parsed.repo}") {
-        ${REPO_FIELDS_FRAGMENT}
-      }
-    }
-  `;
-
-  const response = await fetch(GRAPHQL_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `bearer ${token}`,
-      "Content-Type": "application/json",
-      "User-Agent": "mcs-registry",
-    },
-    body: JSON.stringify({ query }),
-  });
-
-  // Only a null repository means "gone"; anything else would mark a live pack unavailable.
-  if (!response.ok) throw new GitHubApiError(response.status, "graphql");
-
-  const json = (await response.json()) as GraphQLResponse<{
-    repository: RawRepoData | null;
-  }>;
-  if (!json.data) {
-    const msg = json.errors?.map((e) => e.message).join("; ") ?? "no data";
-    if (!json.errors?.some((e) => e.type === "NOT_FOUND")) throw new Error(`GitHub GraphQL error: ${msg}`);
-  }
-
-  const repo = json.data?.repository;
-  if (!repo) return null;
-
-  return mapRepoData(parsed.owner, parsed.repo, repo);
+  const results = await batchFetchRepoMetadata([repoUrl], token);
+  return results.get(repoUrl) ?? null;
 }
 
+/**
+ * Metadata for every repository that exists; a missing entry means GitHub reported it NOT_FOUND.
+ * Any other failure throws for the whole batch — a partial map would be misread downstream as
+ * "these repos are gone" and prune live packs (the cascade that wiped index:all on 2026-05-05).
+ */
 export async function batchFetchRepoMetadata(
   repoUrls: string[],
   token: string
@@ -94,8 +65,6 @@ export async function batchFetchRepoMetadata(
       )
       .join("\n");
 
-    const query = `query { ${aliases} }`;
-
     const response = await fetch(GRAPHQL_ENDPOINT, {
       method: "POST",
       headers: {
@@ -103,28 +72,19 @@ export async function batchFetchRepoMetadata(
         "Content-Type": "application/json",
         "User-Agent": "mcs-registry",
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query: `query { ${aliases} }` }),
     });
+    if (!response.ok) throw new GitHubApiError(response.status, "graphql");
 
-    // Don't silently skip on transport/protocol failure — a partial map gets
-    // misread downstream as "these repos are gone" and triggers a mass-prune.
-    if (!response.ok) {
-      throw new Error(`GitHub GraphQL batch HTTP ${response.status}`);
-    }
-
-    const json = (await response.json()) as GraphQLResponse<
-      Record<string, RawRepoData | null>
-    >;
-    if (!json.data) {
-      const msg = json.errors?.map((e) => e.message).join("; ") ?? "no data";
-      throw new Error(`GitHub GraphQL batch error: ${msg}`);
+    const json = (await response.json()) as GraphQLResponse<Record<string, RawRepoData | null>>;
+    const failure = json.errors?.find((e) => e.type !== "NOT_FOUND");
+    if (failure || !json.data) {
+      throw new Error(`GitHub GraphQL batch error: ${failure?.message ?? "no data"}`);
     }
 
     batch.forEach((p, idx) => {
       const repo = json.data?.[`repo${idx}`];
-      if (repo) {
-        results.set(p.url, mapRepoData(p.owner, p.repo, repo));
-      }
+      if (repo) results.set(p.url, mapRepoData(p.owner, p.repo, repo));
     });
   }
 

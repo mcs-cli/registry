@@ -1,4 +1,5 @@
 import type { ExtractedPackData, RepoTree } from "../types.js";
+import { fetchRepoTree, fetchTechpackYaml } from "./github.js";
 import { runHeuristics, validateFileReferences, validateTechpackYaml } from "./validator.js";
 
 export interface PackEvaluation {
@@ -9,7 +10,7 @@ export interface PackEvaluation {
 }
 
 export const TREE_UNAVAILABLE_WARNING =
-  "Repository tree is too large to enumerate — file checks were skipped";
+  "Repository tree is too large to enumerate — file checks and heuristics were skipped";
 
 /**
  * The one verdict every registry path (submit, scheduled validation) records for a pack.
@@ -28,23 +29,35 @@ export function evaluatePack(yamlContent: string | null, tree: RepoTree | null):
   if (!validation.valid || !validation.packData || !validation.manifest) {
     return invalid(validation.errors);
   }
+  const { packData, manifest } = validation;
 
-  const missing = tree ? validateFileReferences(validation.manifest, tree) : [];
-  if (missing.length > 0) {
-    return { ...invalid(missing), packData: validation.packData };
+  // mcs always has the checkout, so there is no mcs behavior to mirror for a missing tree.
+  if (!tree) {
+    return { status: "active", errors: [], warnings: [TREE_UNAVAILABLE_WARNING], packData };
   }
 
-  const findings = runHeuristics(validation.manifest, tree);
-  const errors = findings.filter((f) => f.severity === "error").map((f) => f.message);
-  const warnings = findings.filter((f) => f.severity === "warning").map((f) => f.message);
-  if (!tree) warnings.unshift(TREE_UNAVAILABLE_WARNING);
+  const missing = validateFileReferences(manifest, tree);
+  if (missing.length > 0) {
+    return { ...invalid(missing), packData };
+  }
 
+  const findings = runHeuristics(manifest, tree);
+  const errors = findings.filter((f) => f.severity === "error").map((f) => f.message);
   return {
     status: errors.length > 0 ? "invalid" : "active",
     errors,
-    warnings,
-    packData: validation.packData,
+    warnings: findings.filter((f) => f.severity === "warning").map((f) => f.message),
+    packData,
   };
+}
+
+/** Fetches a repository's manifest and tree at `branch` and evaluates them; GitHub failures throw. */
+export async function evaluateRepo(owner: string, repo: string, branch: string, token: string): Promise<PackEvaluation> {
+  const [yamlContent, tree] = await Promise.all([
+    fetchTechpackYaml(owner, repo, branch, token),
+    fetchRepoTree(owner, repo, branch, token),
+  ]);
+  return evaluatePack(yamlContent, tree);
 }
 
 function invalid(errors: string[]): PackEvaluation {

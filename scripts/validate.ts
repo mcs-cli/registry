@@ -10,8 +10,8 @@
  *   REGISTRY_URL          — Registry API base URL (e.g., https://techpacks.mcs-cli.dev)
  *   REINDEX_SECRET        — Auth token for the update-status endpoint
  */
-import { evaluatePack } from "../src/lib/packValidation.js";
-import { fetchRepoTree, fetchTechpackYaml, GitHubApiError, parseGitHubUrl } from "../src/lib/github.js";
+import { evaluateRepo } from "../src/lib/packValidation.js";
+import { GitHubApiError, parseGitHubUrl } from "../src/lib/github.js";
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN ?? "";
 const REGISTRY_URL = process.env.REGISTRY_URL ?? "https://techpacks.mcs-cli.dev";
@@ -42,8 +42,6 @@ interface PackInfo {
   status: string;
   defaultBranch: string;
   pushedAt: string;
-  warnings?: string[];
-  validationErrors?: string[];
   deepValidatedAt?: string;
 }
 
@@ -61,15 +59,10 @@ interface ValidationReport {
 
 const FORCE_ALL = process.env.FORCE_ALL === "true";
 
+// A verdict depends only on the pushed content and the validator, so an unpushed pack keeps its
+// verdict whatever it says; after a validator change, run with `force` to re-check every pack.
 function canSkipValidation(pack: PackInfo): boolean {
-  if (FORCE_ALL) return false;
-  // Always validate packs with existing warnings or errors
-  if ((pack.warnings?.length ?? 0) > 0) return false;
-  if ((pack.validationErrors?.length ?? 0) > 0) return false;
-  // Always validate non-active packs (might have been fixed)
-  if (pack.status !== "active") return false;
-  // Skip if pack hasn't been pushed since last deep validation
-  if (!pack.deepValidatedAt || !pack.pushedAt) return false;
+  if (FORCE_ALL || !pack.deepValidatedAt || !pack.pushedAt) return false;
   return new Date(pack.pushedAt).getTime() <= new Date(pack.deepValidatedAt).getTime();
 }
 
@@ -233,12 +226,7 @@ async function validatePack(pack: PackInfo): Promise<ValidationReport> {
   const parsed = parseGitHubUrl(pack.repoUrl);
   if (!parsed) throw new Error(`Invalid repo URL '${pack.repoUrl}'`);
   const { owner, repo } = parsed;
-
-  const [yaml, tree] = await Promise.all([
-    fetchTechpackYaml(owner, repo, pack.defaultBranch, GITHUB_TOKEN),
-    fetchRepoTree(owner, repo, pack.defaultBranch, GITHUB_TOKEN),
-  ]);
-  const evaluation = evaluatePack(yaml, tree);
+  const evaluation = await evaluateRepo(owner, repo, pack.defaultBranch, GITHUB_TOKEN);
 
   return {
     slug: pack.slug,
@@ -270,7 +258,7 @@ async function main() {
       continue;
     }
     if (canSkipValidation(pack)) {
-      console.log(`⏭️  SKIPPED (unchanged, no warnings)`);
+      console.log(`⏭️  SKIPPED (not pushed since last validation)`);
       skippedCount++;
       continue;
     }
@@ -334,7 +322,7 @@ async function main() {
       `## Validation Report\n`,
       `| Metric | Count |\n|--------|-------|`,
       `| Total packs | ${packs.length} |`,
-      `| Skipped (unchanged or unavailable) | ${skippedCount} |`,
+      `| Skipped (not pushed, or unavailable) | ${skippedCount} |`,
       `| Validated | ${reports.length} |`,
       `| Not validated (GitHub error) | ${failures.length} |`,
       `| Active | ${valid.length} |`,

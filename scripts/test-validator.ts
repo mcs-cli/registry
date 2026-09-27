@@ -7,7 +7,7 @@
  * patterns, the load-bearing-file safety rule, severities, and built-in-set
  * drift against mcs.
  */
-import { validateTechpackYaml, runHeuristics as findingsOf } from "../src/lib/validator.js";
+import { validateTechpackYaml, runHeuristics } from "../src/lib/validator.js";
 import { evaluatePack, TREE_UNAVAILABLE_WARNING } from "../src/lib/packValidation.js";
 import { BUILTIN_IGNORED_DIRS, BUILTIN_INFRASTRUCTURE_FILES } from "../src/lib/builtinIgnore.js";
 import type { RepoTree } from "../src/types.js";
@@ -45,8 +45,8 @@ function tree(files: string[], dirs: string[] = []): RepoTree {
 
 const yamlOf = (m: Record<string, unknown>) => JSON.stringify(m); // js-yaml accepts JSON
 
-const runHeuristics = (m: Record<string, unknown>, t: RepoTree | null): string[] =>
-  findingsOf(m, t).map((f) => f.message);
+const messagesOf = (m: Record<string, unknown>, t: RepoTree): string[] =>
+  runHeuristics(m, t).map((f) => f.message);
 
 console.log("=== validateTechpackYaml: ignore field ===");
 
@@ -82,12 +82,12 @@ console.log("\n=== runHeuristics ===");
 {
   const m = baseManifest({ ignore: ["docs/"] });
   const t = tree(["hooks/handler.sh", "docs/foo.md", "docs/sub/x.md"], ["hooks", "docs", "docs/sub"]);
-  eq("ignore dir/ silences subtree", runHeuristics(m, t).filter((h) => h.includes("docs")), []);
+  eq("ignore dir/ silences subtree", messagesOf(m, t).filter((h) => h.includes("docs")), []);
 }
 {
   const m = baseManifest({ ignore: ["docs/*"] });
   const t = tree(["hooks/handler.sh", "docs/foo.md", "docs/sub/x.md"], ["hooks", "docs", "docs/sub"]);
-  const hints = runHeuristics(m, t);
+  const hints = messagesOf(m, t);
   eq("docs/* silences direct child", hints.some((h) => h.includes("docs/foo.md")), false);
   // mcs lists one level into docs/, so docs/sub is the item docs/* is matched against.
   eq("docs/* silences docs/sub, the item mcs lists", hints.some((h) => h.includes("docs/sub")), false);
@@ -95,36 +95,36 @@ console.log("\n=== runHeuristics ===");
 {
   const m = baseManifest();
   const t = tree(["hooks/handler.sh", "node_modules/lib/x.js"], ["hooks", "node_modules", "node_modules/lib"]);
-  eq("node_modules suppressed by built-in", runHeuristics(m, t).some((h) => h.includes("node_modules")), false);
+  eq("node_modules suppressed by built-in", messagesOf(m, t).some((h) => h.includes("node_modules")), false);
 }
 {
   const m = baseManifest();
   const t = tree(["hooks/handler.sh", "README.md"], ["hooks"]);
-  eq("README.md no warning", runHeuristics(m, t).some((h) => h.includes("README.md")), false);
+  eq("README.md no warning", messagesOf(m, t).some((h) => h.includes("README.md")), false);
 }
 {
   const m = baseManifest();
   const t = tree(["hooks/handler.sh", "extras.txt"], ["hooks"]);
   eq(
     "extras.txt root-level warning",
-    runHeuristics(m, t).includes("extras.txt is not referenced by any component"),
+    messagesOf(m, t).includes("extras.txt is not referenced by any component"),
     true
   );
 }
 {
   const m = baseManifest({ ignore: ["extras.txt"] });
   const t = tree(["hooks/handler.sh", "extras.txt"], ["hooks"]);
-  eq("extras.txt silenced by ignore", runHeuristics(m, t).some((h) => h.includes("extras.txt")), false);
+  eq("extras.txt silenced by ignore", messagesOf(m, t).some((h) => h.includes("extras.txt")), false);
 }
 {
   const m = baseManifest();
   const t = tree(["hooks/handler.sh", "weird/foo.txt"], ["hooks", "weird"]);
-  eq("non-well-known dir now scanned", runHeuristics(m, t).some((h) => h.includes("weird/foo.txt")), true);
+  eq("non-well-known dir now scanned", messagesOf(m, t).some((h) => h.includes("weird/foo.txt")), true);
 }
 {
   const m = baseManifest();
   const t = tree(["hooks/handler.sh"], ["hooks"]);
-  eq("referenced path no warning", runHeuristics(m, t).length, 0);
+  eq("referenced path no warning", messagesOf(m, t).length, 0);
 }
 
 console.log("\n=== FNM_PATHNAME bracket-class semantics ===");
@@ -134,7 +134,7 @@ console.log("\n=== FNM_PATHNAME bracket-class semantics ===");
 {
   const m = baseManifest({ ignore: ["docs[/x]"] });
   const t = tree(["hooks/handler.sh", "docs/foo.md", "docsx"], ["hooks", "docs"]);
-  const hints = runHeuristics(m, t);
+  const hints = messagesOf(m, t);
   // POSIX: docs[/x] matches `docsx` (literal x in class) but never `docs/foo.md`.
   eq("[/x] matches docsx (literal class member)", hints.some((h) => h.includes("docsx")), false);
   eq("[/x] does NOT match docs/foo.md (slash via class forbidden)", hints.some((h) => h.includes("docs/foo.md")), true);
@@ -146,7 +146,7 @@ console.log("\n=== FNM_PATHNAME bracket-class semantics ===");
   // We pick a pattern where matching `/` would silence a path it shouldn't.
   const m = baseManifest({ ignore: ["foo[!a]"] });
   const t = tree(["hooks/handler.sh", "foob", "foo/x"], ["hooks", "foo"]);
-  const hints = runHeuristics(m, t);
+  const hints = messagesOf(m, t);
   // `foo[!a]` matches `foob` (b is not a) — silenced.
   eq("[!a] matches foob (negated class)", hints.some((h) => h.includes("foob") && !h.includes("foo/")), false);
 }
@@ -156,7 +156,7 @@ console.log("\n=== Backslash escape (mcs FNM_PATHNAME, no FNM_NOESCAPE) ===");
 {
   const m = baseManifest({ ignore: ["foo\\*"] });
   const t = tree(["hooks/handler.sh", "foo*", "fooXY"], ["hooks"]);
-  const hints = runHeuristics(m, t);
+  const hints = messagesOf(m, t);
   eq("foo\\* matches literal foo*", hints.some((h) => h.includes("foo*")), false);
   eq("foo\\* does NOT match fooXY", hints.some((h) => h.includes("fooXY")), true);
 }
@@ -174,7 +174,7 @@ console.log("\n=== Robustness ===");
   let threw = false;
   let hints: string[] = [];
   try {
-    hints = runHeuristics(m, t);
+    hints = messagesOf(m, t);
   } catch {
     threw = true;
   }
@@ -205,7 +205,7 @@ console.log("\n=== Robustness ===");
   const files = ["hooks/handler.sh"];
   for (let i = 0; i < 100; i++) files.push(`extras/nested/file${i}.txt`);
   const t = tree(files, ["hooks", "extras", "extras/nested"]);
-  eq("nested directory reported once, then the ignore hint", runHeuristics(m, t), [
+  eq("nested directory reported once, then the ignore hint", messagesOf(m, t), [
     "extras/nested is not referenced by any component or template",
     "Add intentional non-material paths (docs/, examples/, assets) to the `ignore:` field in techpack.yaml to silence these warnings.",
   ]);
@@ -216,7 +216,7 @@ console.log("\n=== Robustness ===");
     ["hooks/handler.sh", "hooks/.keep", ".DS_Store", ".claude/notes.md", ".markdownlint.json"],
     ["hooks", ".claude"]
   );
-  eq("hidden files and directories skipped, like .skipsHiddenFiles", runHeuristics(m, t), []);
+  eq("hidden files and directories skipped, like .skipsHiddenFiles", messagesOf(m, t), []);
 }
 
 console.log("\n=== validateTechpackYaml: hook metadata + doctor checks ===");
@@ -284,7 +284,7 @@ console.log("\n=== runHeuristics: mcs 2026.9 warnings ===");
 const noTree = tree([]);
 
 {
-  eq("third-party tap not warned", runHeuristics(withComps({ id: "t", description: "x", brew: "someone/tools/thing" }), noTree), []);
+  eq("third-party tap not warned", messagesOf(withComps({ id: "t", description: "x", brew: "someone/tools/thing" }), noTree), []);
 }
 {
   const m = baseManifest({
@@ -295,7 +295,7 @@ const noTree = tree([]);
       { type: "fileExists", name: "f", path: "x", scope: "project" },
     ],
   });
-  eq("scope/matcher on types that ignore them", runHeuristics(m, noTree), [
+  eq("scope/matcher on types that ignore them", messagesOf(m, noTree), [
     "Doctor check 'jq' declares `scope` but type `commandExists` ignores it — `scope` only applies to checks with a `path`",
     "Doctor check 'k' declares `scope` but type `settingsKeyEquals` ignores it — settings are resolved from the project root automatically (project settings.local.json, then global settings.json)",
     "Doctor check 'jq' declares `matcher` but type `commandExists` ignores it — `matcher` applies only to `hookEventExists`",
@@ -303,39 +303,39 @@ const noTree = tree([]);
 }
 {
   const ts = hookComp({ hook: { source: "hooks/gate.ts", destination: "gate.ts" } });
-  eq("ambiguous .ts hook warned", runHeuristics(withComps(ts), noTree), [
+  eq("ambiguous .ts hook warned", messagesOf(withComps(ts), noTree), [
     "Hook 'gate' installs 'gate.ts' but declares no hookInterpreter — it will run under bash. TypeScript has no single default; declare one (e.g. `hookInterpreter: node --experimental-strip-types`).",
   ]);
   const jsDestTsSource = hookComp({ hook: { source: "hooks/gate.ts", destination: "gate.js" } });
-  eq(".js destination decides over .ts source", runHeuristics(withComps(jsDestTsSource, { id: "n", description: "x", brew: "node" }), noTree), []);
+  eq(".js destination decides over .ts source", messagesOf(withComps(jsDestTsSource, { id: "n", description: "x", brew: "node" }), noTree), []);
 }
 {
-  eq("node hook without brew node warned", runHeuristics(withComps(hookComp()), noTree), [
+  eq("node hook without brew node warned", messagesOf(withComps(hookComp()), noTree), [
     "Hook 'gate' uses node but no brew component installs node",
   ]);
-  eq("tap-qualified node satisfies node hook", runHeuristics(withComps(hookComp(), { id: "n", description: "x", brew: "homebrew/core/node@22" }), noTree), []);
+  eq("tap-qualified node satisfies node hook", messagesOf(withComps(hookComp(), { id: "n", description: "x", brew: "homebrew/core/node@22" }), noTree), []);
   const py = hookComp({ id: "py", hook: { source: "hooks/p.py", destination: "p.py" } });
-  eq("brew python satisfies python3 hook", runHeuristics(withComps(py, { id: "b", description: "x", brew: "python@3.12" }), noTree), []);
+  eq("brew python satisfies python3 hook", messagesOf(withComps(py, { id: "b", description: "x", brew: "python@3.12" }), noTree), []);
   const envHook = hookComp({ id: "e", hookInterpreter: "/usr/bin/env -u X FOO=1 deno run" });
-  eq("env looked through for binary", runHeuristics(withComps(envHook), noTree), ["Hook 'e' uses deno but no brew component installs deno"]);
+  eq("env looked through for binary", messagesOf(withComps(envHook), noTree), ["Hook 'e' uses deno but no brew component installs deno"]);
   const twoNode = withComps(hookComp(), hookComp({ id: "gate2", hook: { source: "hooks/b.js", destination: "b.js" } }));
-  eq("runtime warning deduped per binary", runHeuristics(twoNode, noTree).length, 1);
+  eq("runtime warning deduped per binary", messagesOf(twoNode, noTree).length, 1);
   const bashHook = hookComp({ hook: { source: "hooks/x", destination: "x" } });
-  eq("extensionless hook defaults to bash, not reported", runHeuristics(withComps(bashHook), noTree), []);
+  eq("extensionless hook defaults to bash, not reported", messagesOf(withComps(bashHook), noTree), []);
 }
 {
   const check = { type: "hookEventExists", name: "gate registered", event: "PreToolUse", command: "bash .claude/hooks/gate.js" };
   const m = withComps(hookComp({ doctorChecks: [check] }), { id: "n", description: "x", brew: "node" });
-  eq("doctor check contradicting interpreter warned", runHeuristics(m, noTree), [
+  eq("doctor check contradicting interpreter warned", messagesOf(m, noTree), [
     "Doctor check 'gate registered' asserts command 'bash .claude/hooks/gate.js' but hook 'gate' is registered with 'node' — the check will never match",
   ]);
   const pathOnly = { ...check, command: "gate.js" };
-  eq("path-only assertion not warned", runHeuristics(withComps(hookComp({ doctorChecks: [pathOnly] }), { id: "n", description: "x", brew: "node" }), noTree), []);
+  eq("path-only assertion not warned", messagesOf(withComps(hookComp({ doctorChecks: [pathOnly] }), { id: "n", description: "x", brew: "node" }), noTree), []);
   const unrelated = baseManifest({
     components: [hookComp(), { id: "n", description: "x", brew: "node" }],
     supplementaryDoctorChecks: [{ ...check, command: "bash .claude/hooks/other.sh" }],
   });
-  eq("uncorrelated supplementary check not paired", runHeuristics(unrelated, noTree), []);
+  eq("uncorrelated supplementary check not paired", messagesOf(unrelated, noTree), []);
 }
 {
   const verboseHook = {
@@ -345,19 +345,19 @@ const noTree = tree([]);
     hookEvent: "Stop",
     installAction: { type: "copyPackFile", source: "hooks/v.js", destination: "v.js", fileType: "hook" },
   };
-  eq("long-form copyPackFile hook resolved", runHeuristics(withComps(verboseHook), noTree), ["Hook 'v' uses node but no brew component installs node"]);
+  eq("long-form copyPackFile hook resolved", messagesOf(withComps(verboseHook), noTree), ["Hook 'v' uses node but no brew component installs node"]);
   const verboseBrew = { id: "b", description: "x", type: "brewPackage", installAction: { type: "brewInstall", package: "node" } };
-  eq("long-form brewInstall satisfies runtime", runHeuristics(withComps(verboseHook, verboseBrew), noTree), []);
+  eq("long-form brewInstall satisfies runtime", messagesOf(withComps(verboseHook, verboseBrew), noTree), []);
   const verboseMcp = { id: "m", description: "x", type: "mcpServer", installAction: { type: "mcpServer", name: "srv", command: "npx" } };
-  eq("long-form mcpServer checked", runHeuristics(withComps(verboseMcp), noTree), ["MCP server 'srv' uses node but no brew component installs node"]);
+  eq("long-form mcpServer checked", messagesOf(withComps(verboseMcp), noTree), ["MCP server 'srv' uses node but no brew component installs node"]);
 
   const notHookFile = { ...verboseHook, id: "g", type: "command" };
-  eq("non-hookFile type ignored", runHeuristics(withComps(notHookFile), noTree), []);
-  eq("hookFile without hookEvent ignored", runHeuristics(withComps({ ...verboseHook, hookEvent: undefined }), noTree), []);
+  eq("non-hookFile type ignored", messagesOf(withComps(notHookFile), noTree), []);
+  eq("hookFile without hookEvent ignored", messagesOf(withComps({ ...verboseHook, hookEvent: undefined }), noTree), []);
   const genericFile = { ...verboseHook, installAction: { ...verboseHook.installAction, fileType: "generic" } };
-  eq("fileType other than hook ignored", runHeuristics(withComps(genericFile), noTree), []);
+  eq("fileType other than hook ignored", messagesOf(withComps(genericFile), noTree), []);
 
-  const via = (source: string, destination: string) => runHeuristics(withComps(hookComp({ hook: { source, destination } })), noTree);
+  const via = (source: string, destination: string) => messagesOf(withComps(hookComp({ hook: { source, destination } })), noTree);
   eq("extensionless destination falls back to .py source", via("hooks/p.py", "p"), ["Hook 'gate' uses python3 but no brew component installs python3"]);
   eq("unknown destination extension does not fall back", via("hooks/p.py", "p.bin"), []);
   eq("extension match is case-insensitive", via("hooks/g.JS", "g.JS"), ["Hook 'gate' uses node but no brew component installs node"]);
@@ -367,7 +367,7 @@ const noTree = tree([]);
     components: [{ id: "c", description: "x", brew: "jq", isRequired: true, dependencies: [] }],
     templates: [{ sectionIdentifier: "s", contentFile: "t.md", dependencies: ["c"], isRequired: false }],
   });
-  eq("deprecated keys warned on components and templates", runHeuristics(m, tree(["t.md"])), [
+  eq("deprecated keys warned on components and templates", messagesOf(m, tree(["t.md"])), [
     "Component 'c' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
     "Component 'c' declares `dependencies`, which is deprecated and ignored — packs install every component, in declaration order",
     "Template 's' declares `isRequired`, which is deprecated and ignored — packs install every component, in declaration order",
@@ -378,9 +378,9 @@ const noTree = tree([]);
 }
 {
   const mcp = (command: string) => ({ id: "srv", description: "x", mcp: { command } });
-  eq("npx satisfied by tap-qualified node", runHeuristics(withComps(mcp("npx"), { id: "n", description: "x", brew: "someone/tap/node" }), noTree).filter((h) => h.startsWith("MCP")), []);
-  eq("python3 MCP satisfied by brew python", runHeuristics(withComps(mcp("python3"), { id: "b", description: "x", brew: "python" }), noTree), []);
-  eq("python MCP gap uses mcs wording", runHeuristics(withComps(mcp("/usr/bin/python3")), noTree), [
+  eq("npx satisfied by tap-qualified node", messagesOf(withComps(mcp("npx"), { id: "n", description: "x", brew: "someone/tap/node" }), noTree).filter((h) => h.startsWith("MCP")), []);
+  eq("python3 MCP satisfied by brew python", messagesOf(withComps(mcp("python3"), { id: "b", description: "x", brew: "python" }), noTree), []);
+  eq("python MCP gap uses mcs wording", messagesOf(withComps(mcp("/usr/bin/python3")), noTree), [
     "MCP server 'srv' uses python but no brew component installs python",
   ]);
 }
@@ -436,10 +436,10 @@ const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
   const mcp = { id: "srv", description: "x", mcp: { name: "srv", command: "python3", args: ["-m", "my_server"] } };
   const brew = { id: "py", description: "x", brew: "python" };
   const m = withComps(mcp, brew);
-  eq("python -m module without a directory warned", runHeuristics(m, tree([])), [
+  eq("python -m module without a directory warned", messagesOf(m, tree([])), [
     "MCP server 'srv' references module 'my_server' but my_server/ directory not found in pack",
   ]);
-  eq("python -m module directory present", runHeuristics(m, tree(["my_server/__init__.py"], ["my_server"])).filter((h) => h.startsWith("MCP")), []);
+  eq("python -m module directory present", messagesOf(m, tree(["my_server/__init__.py"], ["my_server"])).filter((h) => h.startsWith("MCP")), []);
 }
 {
   const r = evaluatePack(yamlOf(baseManifest()), null);

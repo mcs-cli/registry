@@ -3,8 +3,8 @@
  * without writing anything. Run: npx tsx scripts/test-validation.ts
  */
 import { execSync } from "child_process";
-import { evaluatePack } from "../src/lib/packValidation.js";
-import { fetchRepoMetadata, fetchRepoTree, fetchTechpackYaml } from "../src/lib/github.js";
+import { evaluateRepo } from "../src/lib/packValidation.js";
+import { fetchRepoMetadata } from "../src/lib/github.js";
 
 const GITHUB_TOKEN = execSync("gh auth token", { encoding: "utf-8" }).trim();
 
@@ -28,11 +28,7 @@ async function testPack(repoUrl: string, label: string): Promise<TestResult> {
       console.log("❌ repo not found");
       return { repo: repoUrl, status: "error", errors: ["Repo not found"], warnings: [] };
     }
-    const [yaml, tree] = await Promise.all([
-      fetchTechpackYaml(metadata.owner, metadata.repo, metadata.defaultBranch, GITHUB_TOKEN),
-      fetchRepoTree(metadata.owner, metadata.repo, metadata.defaultBranch, GITHUB_TOKEN),
-    ]);
-    const evaluation = evaluatePack(yaml, tree);
+    const evaluation = await evaluateRepo(metadata.owner, metadata.repo, metadata.defaultBranch, GITHUB_TOKEN);
     console.log(evaluation.status === "active" ? "✅ active" : "❌ invalid");
     for (const err of evaluation.errors) console.log(`       ✖ ${err}`);
     for (const warn of evaluation.warnings) console.log(`       ⚠️  ${warn}`);
