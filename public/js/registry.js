@@ -602,7 +602,6 @@ document.addEventListener('DOMContentLoaded', () => {
       metaRight.push(`<span class="pack-modal-meta-item star-count"><svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:var(--amber)"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${pack.stargazerCount}</span>`);
     }
     metaRight.push(`<span class="pack-modal-meta-item">Updated ${updated}</span>`);
-    if (pack.latestTag) metaRight.push(`<span class="pack-modal-meta-item">${escapeHtml(pack.latestTag)}</span>`);
     const metaRightHtml = metaRight.join('<span class="pack-modal-meta-sep">&middot;</span>');
 
     const keywordsHtml = pack.keywords && pack.keywords.length > 0

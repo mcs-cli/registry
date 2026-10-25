@@ -144,12 +144,10 @@ function applyMetadata(pack: PackEntry, metadata: RepoMetadata): boolean {
     pack.status === "unavailable" ||
     pack.stargazerCount !== metadata.stargazerCount ||
     pack.defaultBranch !== metadata.defaultBranch ||
-    pack.latestTag !== metadata.latestTag ||
     pack.pushedAt !== metadata.pushedAt;
 
   pack.stargazerCount = metadata.stargazerCount;
   pack.defaultBranch = metadata.defaultBranch;
-  pack.latestTag = metadata.latestTag;
   pack.pushedAt = metadata.pushedAt;
 
   if (pack.status === "unavailable") {

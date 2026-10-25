@@ -82,7 +82,7 @@ Each pack field has exactly one scheduled writer, so no job overwrites another's
 
 | Fields | Written by |
 |--------|-----------|
-| `stargazerCount`, `defaultBranch`, `latestTag`, `pushedAt`, `unavailable` status — plus restoring the last verdict when an unavailable pack comes back | `handleReindex` / `reindexSinglePack` (Worker) |
+| `stargazerCount`, `defaultBranch`, `pushedAt`, `unavailable` status — plus restoring the last verdict when an unavailable pack comes back | `handleReindex` / `reindexSinglePack` (Worker) |
 | `active`/`invalid` status, `warnings`, `validationErrors`, `deepValidatedAt`, and the manifest-derived `identifier`, `displayName`, `description`, `author`, `components`, `keywords` | `scripts/validate.ts` (Actions, via `update-status`'s `packData`) and `handleSubmit`, both via `evaluatePack` |
 
 - **Scheduled**: `.github/workflows/reindex.yml` runs every 6h — `POST /api/reindex` (metadata), then `scripts/validate.ts` (verdicts + issue filing for newly invalid packs). `force` revalidates every pack.

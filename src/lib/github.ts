@@ -6,9 +6,6 @@ const REPO_FIELDS_FRAGMENT = `
   defaultBranchRef { name }
   stargazerCount
   pushedAt
-  refs(refPrefix: "refs/tags/", last: 1, orderBy: { field: TAG_COMMIT_DATE, direction: ASC }) {
-    nodes { name }
-  }
 `;
 
 /** A GitHub response that says nothing about the repository itself (rate limit, outage). */
@@ -184,7 +181,6 @@ interface RawRepoData {
   defaultBranchRef: { name: string } | null;
   stargazerCount: number;
   pushedAt: string;
-  refs: { nodes: Array<{ name: string }> };
 }
 
 interface GitTreeResponse {
@@ -210,13 +206,11 @@ function mapRepoData(
   repo: string,
   data: RawRepoData
 ): RepoMetadata {
-  const tagNodes = data.refs?.nodes ?? [];
   return {
     owner,
     repo,
     defaultBranch: data.defaultBranchRef?.name ?? "main",
     stargazerCount: data.stargazerCount,
     pushedAt: data.pushedAt,
-    latestTag: tagNodes.length > 0 ? tagNodes[0].name : null,
   };
 }
