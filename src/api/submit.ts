@@ -137,7 +137,6 @@ export async function handleSubmit(
     author: evaluation.packData.author,
     repoUrl,
     defaultBranch: metadata.defaultBranch,
-    latestTag: metadata.latestTag,
     stargazerCount: metadata.stargazerCount,
     pushedAt: metadata.pushedAt,
     components: evaluation.packData.components,

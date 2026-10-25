@@ -66,7 +66,6 @@ function packEntry(slug: string, extra: Partial<PackEntry> = {}): PackEntry {
     author: null,
     repoUrl: `https://github.com/${owner}/${repo}`,
     defaultBranch: "main",
-    latestTag: null,
     stargazerCount: 1,
     pushedAt: "2026-09-01T00:00:00Z",
     components: { mcpServers: 0, hooks: 0, skills: 0, commands: 0, agents: 0, brewPackages: 0, plugins: 0, configurations: 0, templates: 0 },
@@ -87,7 +86,6 @@ const repoData = (stars: number) => ({
   defaultBranchRef: { name: "main" },
   stargazerCount: stars,
   pushedAt: "2026-09-01T00:00:00Z",
-  refs: { nodes: [] },
 });
 
 function stubFetch(handler: (url: string) => Response | Promise<Response>): void {

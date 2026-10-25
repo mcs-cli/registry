@@ -6,7 +6,6 @@ export interface PackEntry {
   author: string | null;
   repoUrl: string;
   defaultBranch: string;
-  latestTag: string | null;
   stargazerCount: number;
   pushedAt: string;
   components: ComponentCounts;
@@ -39,7 +38,6 @@ export interface RepoMetadata {
   defaultBranch: string;
   stargazerCount: number;
   pushedAt: string;
-  latestTag: string | null;
 }
 
 export interface ValidationResult {
