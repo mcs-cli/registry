@@ -7,8 +7,12 @@ import {
   hookInterpreterRejectionReason,
   interpreterBinary,
   isAmbiguouslyTyped,
+  interpreterOfRegisteredCommand,
   isCheckableBinary,
   lastPathComponent,
+  LEGACY_PROJECT_HOOK_DIRECTORY,
+  managedHookPath,
+  PROJECT_HOOK_DIRECTORY,
   resolveHookInterpreter,
   tokens,
 } from "./hookInterpreter.js";
@@ -600,6 +604,7 @@ export function runHeuristics(rawManifest: Record<string, unknown>, tree: RepoTr
     ...checkAmbiguousHookExtensions(resolved).map(warning),
     ...checkUninstalledHookRuntimes(resolved, brewPackages).map(warning),
     ...checkHookDoctorCheckInterpreters(manifest, resolved).map(warning),
+    ...checkRelativeHookInvocationAssertions(doctorChecks).map(warning),
     ...checkDeprecatedKeys(manifest, components).map(warning),
   ];
   if (unreferenced.length > 0) findings.push(warning(IGNORE_HINT));
@@ -951,6 +956,22 @@ function checkHookDoctorCheckInterpreters(manifest: Record<string, unknown>, res
         `Doctor check '${check.name}' asserts command '${check.command}' but hook '${comp.id}' is registered with '${hook.interpreter}' — the check will never match`
       );
     }
+  }
+  return findings;
+}
+
+// Project hooks are registered under `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`, so only the script path still matches.
+function checkRelativeHookInvocationAssertions(checks: Array<Record<string, unknown>>): string[] {
+  const legacy = [LEGACY_PROJECT_HOOK_DIRECTORY];
+  const findings: string[] = [];
+  for (const check of checks) {
+    if (check.type !== "hookEventExists" || typeof check.command !== "string") continue;
+    if (interpreterOfRegisteredCommand(check.command, legacy) === null) continue;
+    const path = managedHookPath(check.command, legacy);
+    if (path === null) continue;
+    findings.push(
+      `Doctor check '${check.name}' asserts command '${check.command}', but project hooks are registered as '<interpreter> ${PROJECT_HOOK_DIRECTORY}…' — match on '${path}' alone`
+    );
   }
   return findings;
 }

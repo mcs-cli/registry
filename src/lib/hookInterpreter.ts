@@ -2,6 +2,10 @@
 
 const DEFAULT_INTERPRETER = "bash";
 
+export const LEGACY_PROJECT_HOOK_DIRECTORY = ".claude/hooks/";
+// Anchored because Claude Code runs hooks in the session's current directory, which a `cd` moves.
+export const PROJECT_HOOK_DIRECTORY = `"$CLAUDE_PROJECT_DIR"/${LEGACY_PROJECT_HOOK_DIRECTORY}`;
+
 const INFERENCE_TABLE: Record<string, string> = {
   sh: "bash",
   bash: "bash",
@@ -100,6 +104,18 @@ export function interpreterBinary(interpreter: string): string {
     }
   }
   return first;
+}
+
+export function managedHookPath(command: string, directories: readonly string[]): string | null {
+  return tokens(command).find((t) => directories.some((d) => t.startsWith(d))) ?? null;
+}
+
+// Only a trailing path is the shape mcs composes; anything else (`mcs check-updates --hook`) has no interpreter.
+export function interpreterOfRegisteredCommand(command: string, directories: readonly string[]): string | null {
+  const parts = tokens(command);
+  const path = parts[parts.length - 1];
+  if (parts.length < 2 || !directories.some((d) => path.startsWith(d))) return null;
+  return parts.slice(0, -1).join(" ");
 }
 
 export function hookInterpreterRejectionReason(interpreter: string): string | null {
