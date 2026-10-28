@@ -327,18 +327,40 @@ const noTree = tree([]);
   eq("extensionless hook defaults to bash, not reported", messagesOf(withComps(bashHook), noTree), []);
 }
 {
-  const check = { type: "hookEventExists", name: "gate registered", event: "PreToolUse", command: "bash .claude/hooks/gate.js" };
+  const check = { type: "hookEventExists", name: "gate registered", event: "PreToolUse", command: 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/gate.js' };
   const m = withComps(hookComp({ doctorChecks: [check] }), { id: "n", description: "x", brew: "node" });
   eq("doctor check contradicting interpreter warned", messagesOf(m, noTree), [
-    "Doctor check 'gate registered' asserts command 'bash .claude/hooks/gate.js' but hook 'test.gate' is registered with 'node' — the check will never match",
+    `Doctor check 'gate registered' asserts command 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/gate.js' but hook 'test.gate' is registered with 'node' — the check will never match`,
   ]);
   const pathOnly = { ...check, command: "gate.js" };
   eq("path-only assertion not warned", messagesOf(withComps(hookComp({ doctorChecks: [pathOnly] }), { id: "n", description: "x", brew: "node" }), noTree), []);
   const unrelated = baseManifest({
     components: [hookComp(), { id: "n", description: "x", brew: "node" }],
-    supplementaryDoctorChecks: [{ ...check, command: "bash .claude/hooks/other.sh" }],
+    supplementaryDoctorChecks: [{ ...check, command: 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/other.sh' }],
   });
   eq("uncorrelated supplementary check not paired", messagesOf(unrelated, noTree), []);
+}
+{
+  const check = { type: "hookEventExists", name: "fmt registered", event: "SessionStart", command: "bash .claude/hooks/fmt.sh" };
+  const fmtHook = (doctorChecks: unknown[]) => hookComp({ id: "fmt", hook: { source: "hooks/fmt.sh", destination: "fmt.sh" }, doctorChecks });
+  const expected = "Doctor check 'fmt registered' asserts command 'bash .claude/hooks/fmt.sh', which never matches, because component hooks install under 'test/' — match on 'test/fmt.sh' alone";
+  eq("relative invocation assertion warned", messagesOf(withComps(fmtHook([check])), noTree), [expected]);
+  const supplementary = baseManifest({ components: [fmtHook([])], supplementaryDoctorChecks: [check] });
+  eq("relative invocation in supplementary check warned", messagesOf(supplementary, noTree), [expected]);
+  eq("path-only relative assertion not warned", messagesOf(withComps(fmtHook([{ ...check, command: ".claude/hooks/fmt.sh" }])), noTree), []);
+  eq("relative assertion with trailing args not warned", messagesOf(withComps(fmtHook([{ ...check, command: "bash .claude/hooks/fmt.sh -v" }])), noTree), []);
+  const namespaced = { ...check, command: "bash .claude/hooks/test/fmt.sh" };
+  eq("namespaced relative assertion warned", messagesOf(withComps(fmtHook([namespaced])), noTree), [
+    "Doctor check 'fmt registered' asserts command 'bash .claude/hooks/test/fmt.sh', which still passes, but match on 'test/fmt.sh' alone so it doesn't depend on the registered prefix",
+  ]);
+  for (const command of ['bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/test/fmt.sh', "bash ~/.claude/hooks/test/fmt.sh"]) {
+    eq(`non-relative assertion not warned: ${command}`, messagesOf(withComps(fmtHook([{ ...check, command }])), noTree), []);
+  }
+  const unrelated = baseManifest({
+    components: [fmtHook([])],
+    supplementaryDoctorChecks: ["bash .claude/hooks/settings-hook.sh", "bash .claude/hooks/pre-fmt.sh"].map((command) => ({ ...check, command })),
+  });
+  eq("relative assertion naming no hook component's file not warned", messagesOf(unrelated, noTree), []);
 }
 {
   const verboseHook = {

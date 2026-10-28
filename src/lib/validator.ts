@@ -6,9 +6,12 @@ import { BUILTIN_IGNORED_DIRS, BUILTIN_INFRASTRUCTURE_FILES } from "./builtinIgn
 import {
   hookInterpreterRejectionReason,
   interpreterBinary,
+  interpreterOfRegisteredCommand,
   isAmbiguouslyTyped,
   isCheckableBinary,
   lastPathComponent,
+  LEGACY_PROJECT_HOOK_DIRECTORY,
+  managedHookPath,
   resolveHookInterpreter,
   tokens,
 } from "./hookInterpreter.js";
@@ -600,6 +603,7 @@ export function runHeuristics(rawManifest: Record<string, unknown>, tree: RepoTr
     ...checkAmbiguousHookExtensions(resolved).map(warning),
     ...checkUninstalledHookRuntimes(resolved, brewPackages).map(warning),
     ...checkHookDoctorCheckInterpreters(manifest, resolved).map(warning),
+    ...checkRelativeHookInvocationAssertions(manifest, resolved).map(warning),
     ...checkDeprecatedKeys(manifest, components).map(warning),
   ];
   if (unreferenced.length > 0) findings.push(warning(IGNORE_HINT));
@@ -950,6 +954,33 @@ function checkHookDoctorCheckInterpreters(manifest: Record<string, unknown>, res
       findings.push(
         `Doctor check '${check.name}' asserts command '${check.command}' but hook '${comp.id}' is registered with '${hook.interpreter}' — the check will never match`
       );
+    }
+  }
+  return findings;
+}
+
+// Doctor still accepts the relative invocation, so this only nudges authors toward `<pack-id>/<file>`.
+// Settings-file hooks are merged verbatim and keep their relative command, so only hook components count.
+function checkRelativeHookInvocationAssertions(manifest: Record<string, unknown>, resolved: ResolvedComponent[]): string[] {
+  const legacy = [LEGACY_PROJECT_HOOK_DIRECTORY];
+  const supplementary = records(manifest.supplementaryDoctorChecks);
+  const findings: string[] = [];
+  for (const { comp, hook } of resolved) {
+    if (!hook) continue;
+    const correlated = supplementary.filter((c) => typeof c.command === "string" && c.command.includes(hook.destination));
+    for (const check of [...records(comp.doctorChecks), ...correlated]) {
+      if (check.type !== "hookEventExists" || typeof check.command !== "string") continue;
+      if (interpreterOfRegisteredCommand(check.command, legacy) === null) continue;
+      const path = managedHookPath(check.command, legacy);
+      if (path === null) continue;
+      // A bare suffix test would let `pre-fmt.sh` stand in for `fmt.sh`.
+      const namesHook = path === LEGACY_PROJECT_HOOK_DIRECTORY + hook.destination || path.endsWith(`/${hook.destination}`);
+      if (!namesHook) continue;
+      const namespaced = `${manifest.identifier}/${hook.destination}`;
+      const verdict = path === LEGACY_PROJECT_HOOK_DIRECTORY + namespaced
+        ? `which still passes, but match on '${namespaced}' alone so it doesn't depend on the registered prefix`
+        : `which never matches, because component hooks install under '${manifest.identifier}/' — match on '${namespaced}' alone`;
+      findings.push(`Doctor check '${check.name}' asserts command '${check.command}', ${verdict}`);
     }
   }
   return findings;
