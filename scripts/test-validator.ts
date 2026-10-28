@@ -327,21 +327,18 @@ const noTree = tree([]);
   eq("extensionless hook defaults to bash, not reported", messagesOf(withComps(bashHook), noTree), []);
 }
 {
-  const check = { type: "hookEventExists", name: "gate registered", event: "PreToolUse", command: "bash .claude/hooks/gate.js" };
+  const check = { type: "hookEventExists", name: "gate registered", event: "PreToolUse", command: 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/gate.js' };
   const m = withComps(hookComp({ doctorChecks: [check] }), { id: "n", description: "x", brew: "node" });
   eq("doctor check contradicting interpreter warned", messagesOf(m, noTree), [
-    "Doctor check 'gate registered' asserts command 'bash .claude/hooks/gate.js' but hook 'test.gate' is registered with 'node' — the check will never match",
-    "Doctor check 'gate registered' asserts command 'bash .claude/hooks/gate.js', but project hooks are registered as '<interpreter> \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/…' — match on '.claude/hooks/gate.js' alone",
+    `Doctor check 'gate registered' asserts command 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/gate.js' but hook 'test.gate' is registered with 'node' — the check will never match`,
   ]);
   const pathOnly = { ...check, command: "gate.js" };
   eq("path-only assertion not warned", messagesOf(withComps(hookComp({ doctorChecks: [pathOnly] }), { id: "n", description: "x", brew: "node" }), noTree), []);
   const unrelated = baseManifest({
     components: [hookComp(), { id: "n", description: "x", brew: "node" }],
-    supplementaryDoctorChecks: [{ ...check, command: "bash .claude/hooks/other.sh" }],
+    supplementaryDoctorChecks: [{ ...check, command: 'bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/other.sh' }],
   });
-  eq("uncorrelated supplementary check not paired", messagesOf(unrelated, noTree), [
-    "Doctor check 'gate registered' asserts command 'bash .claude/hooks/other.sh', but project hooks are registered as '<interpreter> \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/…' — match on '.claude/hooks/other.sh' alone",
-  ]);
+  eq("uncorrelated supplementary check not paired", messagesOf(unrelated, noTree), []);
 }
 {
   const check = { type: "hookEventExists", name: "fmt registered", event: "SessionStart", command: "bash .claude/hooks/fmt.sh" };
