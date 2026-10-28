@@ -343,12 +343,24 @@ const noTree = tree([]);
 {
   const check = { type: "hookEventExists", name: "fmt registered", event: "SessionStart", command: "bash .claude/hooks/fmt.sh" };
   const fmtHook = (doctorChecks: unknown[]) => hookComp({ id: "fmt", hook: { source: "hooks/fmt.sh", destination: "fmt.sh" }, doctorChecks });
-  const expected = "Doctor check 'fmt registered' asserts command 'bash .claude/hooks/fmt.sh', but project hooks are registered as '<interpreter> \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/…' — match on '.claude/hooks/fmt.sh' alone";
+  const expected = "Doctor check 'fmt registered' asserts command 'bash .claude/hooks/fmt.sh', but project hooks are registered as '<interpreter> \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/…' — match on 'test/fmt.sh' alone";
   eq("relative invocation assertion warned", messagesOf(withComps(fmtHook([check])), noTree), [expected]);
   const supplementary = baseManifest({ components: [fmtHook([])], supplementaryDoctorChecks: [check] });
   eq("relative invocation in supplementary check warned", messagesOf(supplementary, noTree), [expected]);
   eq("path-only relative assertion not warned", messagesOf(withComps(fmtHook([{ ...check, command: ".claude/hooks/fmt.sh" }])), noTree), []);
   eq("relative assertion with trailing args not warned", messagesOf(withComps(fmtHook([{ ...check, command: "bash .claude/hooks/fmt.sh -v" }])), noTree), []);
+  const namespaced = { ...check, command: "bash .claude/hooks/test/fmt.sh" };
+  eq("namespaced relative assertion warned", messagesOf(withComps(fmtHook([namespaced])), noTree), [
+    expected.replace("'bash .claude/hooks/fmt.sh'", "'bash .claude/hooks/test/fmt.sh'"),
+  ]);
+  for (const command of ['bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/test/fmt.sh', "bash ~/.claude/hooks/test/fmt.sh"]) {
+    eq(`non-relative assertion not warned: ${command}`, messagesOf(withComps(fmtHook([{ ...check, command }])), noTree), []);
+  }
+  const unrelated = baseManifest({
+    components: [fmtHook([])],
+    supplementaryDoctorChecks: ["bash .claude/hooks/settings-hook.sh", "bash .claude/hooks/pre-fmt.sh"].map((command) => ({ ...check, command })),
+  });
+  eq("relative assertion naming no hook component's file not warned", messagesOf(unrelated, noTree), []);
 }
 {
   const verboseHook = {

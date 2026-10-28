@@ -604,7 +604,7 @@ export function runHeuristics(rawManifest: Record<string, unknown>, tree: RepoTr
     ...checkAmbiguousHookExtensions(resolved).map(warning),
     ...checkUninstalledHookRuntimes(resolved, brewPackages).map(warning),
     ...checkHookDoctorCheckInterpreters(manifest, resolved).map(warning),
-    ...checkRelativeHookInvocationAssertions(doctorChecks).map(warning),
+    ...checkRelativeHookInvocationAssertions(manifest, resolved).map(warning),
     ...checkDeprecatedKeys(manifest, components).map(warning),
   ];
   if (unreferenced.length > 0) findings.push(warning(IGNORE_HINT));
@@ -960,18 +960,25 @@ function checkHookDoctorCheckInterpreters(manifest: Record<string, unknown>, res
   return findings;
 }
 
-// Project hooks are registered under `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`, so only the script path still matches.
-function checkRelativeHookInvocationAssertions(checks: Array<Record<string, unknown>>): string[] {
+// Doctor still accepts the relative invocation, so this only nudges authors toward `<pack-id>/<file>`.
+// Settings-file hooks are merged verbatim and keep their relative command, so only hook components count.
+function checkRelativeHookInvocationAssertions(manifest: Record<string, unknown>, resolved: ResolvedComponent[]): string[] {
   const legacy = [LEGACY_PROJECT_HOOK_DIRECTORY];
+  const supplementary = records(manifest.supplementaryDoctorChecks);
   const findings: string[] = [];
-  for (const check of checks) {
-    if (check.type !== "hookEventExists" || typeof check.command !== "string") continue;
-    if (interpreterOfRegisteredCommand(check.command, legacy) === null) continue;
-    const path = managedHookPath(check.command, legacy);
-    if (path === null) continue;
-    findings.push(
-      `Doctor check '${check.name}' asserts command '${check.command}', but project hooks are registered as '<interpreter> ${PROJECT_HOOK_DIRECTORY}…' — match on '${path}' alone`
-    );
+  for (const { comp, hook } of resolved) {
+    if (!hook) continue;
+    const correlated = supplementary.filter((c) => typeof c.command === "string" && c.command.includes(hook.destination));
+    for (const check of [...records(comp.doctorChecks), ...correlated]) {
+      if (check.type !== "hookEventExists" || typeof check.command !== "string") continue;
+      if (interpreterOfRegisteredCommand(check.command, legacy) === null) continue;
+      const path = managedHookPath(check.command, legacy);
+      // A bare suffix test would let `pre-fmt.sh` stand in for `fmt.sh`.
+      if (path === null || (path !== LEGACY_PROJECT_HOOK_DIRECTORY + hook.destination && !path.endsWith(`/${hook.destination}`))) continue;
+      findings.push(
+        `Doctor check '${check.name}' asserts command '${check.command}', but project hooks are registered as '<interpreter> ${PROJECT_HOOK_DIRECTORY}…' — match on '${manifest.identifier}/${hook.destination}' alone`
+      );
+    }
   }
   return findings;
 }
