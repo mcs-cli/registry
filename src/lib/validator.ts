@@ -6,8 +6,8 @@ import { BUILTIN_IGNORED_DIRS, BUILTIN_INFRASTRUCTURE_FILES } from "./builtinIgn
 import {
   hookInterpreterRejectionReason,
   interpreterBinary,
-  isAmbiguouslyTyped,
   interpreterOfRegisteredCommand,
+  isAmbiguouslyTyped,
   isCheckableBinary,
   lastPathComponent,
   LEGACY_PROJECT_HOOK_DIRECTORY,
@@ -972,8 +972,10 @@ function checkRelativeHookInvocationAssertions(manifest: Record<string, unknown>
       if (check.type !== "hookEventExists" || typeof check.command !== "string") continue;
       if (interpreterOfRegisteredCommand(check.command, legacy) === null) continue;
       const path = managedHookPath(check.command, legacy);
+      if (path === null) continue;
       // A bare suffix test would let `pre-fmt.sh` stand in for `fmt.sh`.
-      if (path === null || (path !== LEGACY_PROJECT_HOOK_DIRECTORY + hook.destination && !path.endsWith(`/${hook.destination}`))) continue;
+      const namesHook = path === LEGACY_PROJECT_HOOK_DIRECTORY + hook.destination || path.endsWith(`/${hook.destination}`);
+      if (!namesHook) continue;
       const namespaced = `${manifest.identifier}/${hook.destination}`;
       const verdict = path === LEGACY_PROJECT_HOOK_DIRECTORY + namespaced
         ? `which still passes, but match on '${namespaced}' alone so it doesn't depend on the registered prefix`
