@@ -12,7 +12,6 @@ import {
   lastPathComponent,
   LEGACY_PROJECT_HOOK_DIRECTORY,
   managedHookPath,
-  PROJECT_HOOK_DIRECTORY,
   resolveHookInterpreter,
   tokens,
 } from "./hookInterpreter.js";
@@ -975,9 +974,11 @@ function checkRelativeHookInvocationAssertions(manifest: Record<string, unknown>
       const path = managedHookPath(check.command, legacy);
       // A bare suffix test would let `pre-fmt.sh` stand in for `fmt.sh`.
       if (path === null || (path !== LEGACY_PROJECT_HOOK_DIRECTORY + hook.destination && !path.endsWith(`/${hook.destination}`))) continue;
-      findings.push(
-        `Doctor check '${check.name}' asserts command '${check.command}', but project hooks are registered as '<interpreter> ${PROJECT_HOOK_DIRECTORY}…' — match on '${manifest.identifier}/${hook.destination}' alone`
-      );
+      const namespaced = `${manifest.identifier}/${hook.destination}`;
+      const verdict = path === LEGACY_PROJECT_HOOK_DIRECTORY + namespaced
+        ? `which still passes, but match on '${namespaced}' alone so it doesn't depend on the registered prefix`
+        : `which never matches, because component hooks install under '${manifest.identifier}/' — match on '${namespaced}' alone`;
+      findings.push(`Doctor check '${check.name}' asserts command '${check.command}', ${verdict}`);
     }
   }
   return findings;

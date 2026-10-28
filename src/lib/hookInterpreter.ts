@@ -3,8 +3,6 @@
 const DEFAULT_INTERPRETER = "bash";
 
 export const LEGACY_PROJECT_HOOK_DIRECTORY = ".claude/hooks/";
-// Anchored because Claude Code runs hooks in the session's current directory, which a `cd` moves.
-export const PROJECT_HOOK_DIRECTORY = `"$CLAUDE_PROJECT_DIR"/${LEGACY_PROJECT_HOOK_DIRECTORY}`;
 
 const INFERENCE_TABLE: Record<string, string> = {
   sh: "bash",
