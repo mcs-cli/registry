@@ -1,16 +1,29 @@
 import type { RepoTree } from "../types.js";
 
-// Mirrors mcs PackMarketplace (Sources/mcs/ExternalPack/PackMarketplace.swift) and the parts of
-// PluginRef (Sources/mcs/Core/PluginRef.swift) that `name@pack` resolution reads.
-
-export const PACK_MARKETPLACE_MANIFEST = ".claude-plugin/marketplace.json";
+// Mirrors mcs PackMarketplace (Sources/mcs/ExternalPack/PackMarketplace.swift), the parts of
+// PluginRef (Sources/mcs/Core/PluginRef.swift) that `name@pack` resolution reads, and
+// ExternalPackManifest.pluginSourceRejectionReason.
 
 const PACK_TOKEN = "pack";
 const PACK_MARKETPLACE_PREFIX = "mcs-";
+const PLUGIN_MANIFEST = ".claude-plugin/plugin.json";
 
 // Foundation's localizedDescription for every JSONSerialization failure; mcs prints it verbatim, so
 // parity assumes mcs runs under an English locale.
 const UNPARSEABLE_JSON = "The data couldn’t be read because it isn’t in the correct format.";
+
+/** A `plugin:` component: its declared name and, for `name@pack`, the optional plugin directory. */
+export interface DeclaredPlugin {
+  name: string;
+  source?: string;
+}
+
+interface HostedPlugin {
+  bareName: string;
+  /** As mcs's `relativePath` spells it: the source as written, `"."` for the pack root. */
+  dir: string;
+  manifestPath: string;
+}
 
 interface PluginRef {
   bareName: string;
@@ -27,9 +40,27 @@ function parsePluginRef(fullName: string): PluginRef {
   return { bareName, marketplaceName: token.includes("/") ? null : token };
 }
 
+/**
+ * Mirrors ExternalPackManifest.pluginSourceRejectionReason: `.`, `./x` and `..` are refused rather
+ * than normalised; leaving the key out is how a manifest names the pack root.
+ */
+export function pluginSourceRejectionReason(source: string, pluginName: string): string | null {
+  const ref = parsePluginRef(pluginName);
+  if (ref.marketplaceName !== PACK_TOKEN) {
+    return `pluginSource applies only to a plugin the pack hosts ('${ref.bareName}@${PACK_TOKEN}')`;
+  }
+  const isPlainRelative = source !== "" && !source.startsWith("/")
+    && !source.split("/").some((s) => s === "" || s === "." || s === "..");
+  if (!isPlainRelative) {
+    return `pluginSource '${source}' must be a path inside the pack such as 'plugins/${ref.bareName}'`
+      + " (no leading './', '.', '..' or '/'); leave it out for the pack root";
+  }
+  return null;
+}
+
 /** Mirrors the reserved-marketplace check at the top of ExternalPackLoader.validatePackHostedPlugins. */
-export function reservedMarketplaceError(pluginNames: string[]): string | null {
-  for (const name of pluginNames) {
+export function reservedMarketplaceError(plugins: DeclaredPlugin[]): string | null {
+  for (const { name } of plugins) {
     const ref = parsePluginRef(name);
     if (ref.marketplaceName?.startsWith(PACK_MARKETPLACE_PREFIX)) {
       return `plugin '${name}': marketplaces named '${PACK_MARKETPLACE_PREFIX}…' are reserved for mcs;`
@@ -39,43 +70,50 @@ export function reservedMarketplaceError(pluginNames: string[]): string | null {
   return null;
 }
 
-/** The bare names of the plugins declared as `name@pack`, in declaration order. */
-export function hostedPluginNames(pluginNames: string[]): string[] {
-  return pluginNames
-    .map(parsePluginRef)
-    .filter((ref) => ref.marketplaceName === PACK_TOKEN)
-    .map((ref) => ref.bareName);
+/** The `name@pack` plugins, in declaration order, with the plugin.json each must ship. */
+export function hostedPlugins(plugins: DeclaredPlugin[]): HostedPlugin[] {
+  return plugins.flatMap(({ name, source }) => {
+    const ref = parsePluginRef(name);
+    if (ref.marketplaceName !== PACK_TOKEN) return [];
+    const manifestPath = source === undefined ? PLUGIN_MANIFEST : `${source}/${PLUGIN_MANIFEST}`;
+    return [{ bareName: ref.bareName, dir: source ?? ".", manifestPath }];
+  });
 }
 
 /**
- * Mirrors PackMarketplace.hostedPlugins: each plugin's directory as mcs's `relativePath` spells it
- * (`"."` for the pack root), or the first failure as a string, the only one mcs reports.
- * `marketplaceJson` is null when the pack has no marketplace manifest.
+ * Mirrors PackMarketplace.hostedPlugins: each hosted plugin's directory, or the first failure as a
+ * string, the only one mcs reports. `pluginManifests` maps a plugin.json path to its contents and
+ * lacks every path the pack does not ship.
  */
 export function resolveHostedPlugins(
-  pluginNames: string[],
-  marketplaceJson: string | null,
+  plugins: DeclaredPlugin[],
+  pluginManifests: ReadonlyMap<string, string>,
   tree: RepoTree
 ): string[] | string {
-  const names = hostedPluginNames(pluginNames);
-  if (names.length === 0) return [];
-  // The tree lists a symlinked `.claude-plugin` as one blob with nothing under it, and the contents API
-  // cannot read through it; mcs follows the link, so a manifest behind one is left to mcs.
-  if (marketplaceJson === null && crossesSymlink(PACK_MARKETPLACE_MANIFEST, tree)) return [];
-  const entries = marketplaceEntries(marketplaceJson);
-  if (typeof entries === "string") return entries;
   const dirs: string[] = [];
-  for (const name of names) {
-    const resolved = resolve(name, entries, tree);
-    if ("error" in resolved) return resolved.error;
-    dirs.push(resolved.dir);
+  for (const plugin of hostedPlugins(plugins)) {
+    const error = resolveError(plugin, pluginManifests, tree);
+    if (error) return error;
+    dirs.push(plugin.dir);
   }
   return dirs;
 }
 
-function marketplaceEntries(json: string | null): Array<Record<string, unknown>> | string {
-  if (json === null) return `no ${PACK_MARKETPLACE_MANIFEST} in the pack`;
-  const unreadable = (reason: string) => `${PACK_MARKETPLACE_MANIFEST} could not be read: ${reason}`;
+// No escape check: pluginSourceRejectionReason refuses `..`, so only a symlink can leave the pack,
+// and mcs resolves those itself.
+function resolveError(
+  { bareName, dir, manifestPath }: HostedPlugin,
+  pluginManifests: ReadonlyMap<string, string>,
+  tree: RepoTree
+): string | null {
+  // The tree cannot tell where a symlink points, so a plugin behind one is left to mcs.
+  if (crossesSymlink(dir, tree) || crossesSymlink(manifestPath, tree)) return null;
+  if (dir !== "." && !tree.directories.has(dir)) {
+    return `the directory of plugin '${bareName}' is not a directory in the pack`;
+  }
+  const json = pluginManifests.get(manifestPath);
+  if (json === undefined) return `plugin '${bareName}' has no ${manifestPath}`;
+  const unreadable = (reason: string) => `the ${PLUGIN_MANIFEST} of plugin '${bareName}' could not be read: ${reason}`;
   let object: unknown;
   try {
     object = JSON.parse(json);
@@ -84,44 +122,10 @@ function marketplaceEntries(json: string | null): Array<Record<string, unknown>>
   }
   // JSONSerialization rejects a top-level scalar as unparseable, not as the wrong shape.
   if (object === null || typeof object !== "object") return unreadable(UNPARSEABLE_JSON);
-  const plugins = (object as Record<string, unknown>).plugins;
-  const isEntry = (p: unknown) => !!p && typeof p === "object" && !Array.isArray(p);
-  if (!Array.isArray(plugins) || !plugins.every(isEntry)) {
-    return unreadable("expected an object with a `plugins` list");
-  }
-  return plugins as Array<Record<string, unknown>>;
-}
-
-// `dir` keeps mcs's spelling (`./a/..` stays `a/..`): its heuristics compare it as a plain string.
-function resolve(name: string, entries: Array<Record<string, unknown>>, tree: RepoTree): { dir: string } | { error: string } {
-  const entry = entries.find((e) => e.name === name);
-  if (!entry) return { error: `${PACK_MARKETPLACE_MANIFEST} lists no plugin named '${name}'` };
-  const source = entry.source;
-  if (typeof source !== "string" || !(source === "." || source.startsWith("./"))) {
-    return { error: `plugin '${name}' in ${PACK_MARKETPLACE_MANIFEST} needs a relative \`source\` such as "./"` };
-  }
-  if (source === "." || source === "./") return { dir: "." };
-  const dir = source.slice(2);
-  const path = standardized(dir);
-  if (path === null) {
-    return { error: `the source of plugin '${name}' in ${PACK_MARKETPLACE_MANIFEST} points outside the pack` };
-  }
-  // mcs resolves symlinks before this test; the tree cannot, so a linked source is left to mcs.
-  if (path !== "" && !crossesSymlink(path, tree) && !tree.directories.has(path)) {
-    return { error: `the source of plugin '${name}' in ${PACK_MARKETPLACE_MANIFEST} is not a directory in the pack` };
-  }
-  return { dir };
-}
-
-// The pack-relative path with `.` and `..` applied; null when a `..` climbs out of the pack.
-function standardized(relativePath: string): string | null {
-  const segments: string[] = [];
-  for (const segment of relativePath.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment !== "..") segments.push(segment);
-    else if (segments.pop() === undefined) return null;
-  }
-  return segments.join("/");
+  const declared = Array.isArray(object) ? undefined : (object as Record<string, unknown>).name;
+  if (typeof declared !== "string") return unreadable("expected an object with a `name` string");
+  if (declared !== bareName) return `plugin '${bareName}' is named '${declared}' in its ${PLUGIN_MANIFEST}`;
+  return null;
 }
 
 function crossesSymlink(path: string, tree: RepoTree): boolean {

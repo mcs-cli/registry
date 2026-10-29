@@ -3,6 +3,7 @@ import type { ExtractedPackData, ComponentCounts, ValidationResult, RepoTree } f
 import schema from "../../schema/techpack-schema.json";
 import { compileMatcher, compileAnyMatcher, type Matcher } from "./glob.js";
 import { BUILTIN_IGNORED_DIRS, BUILTIN_INFRASTRUCTURE_FILES } from "./builtinIgnore.js";
+import { pluginSourceRejectionReason, type DeclaredPlugin } from "./packMarketplace.js";
 import {
   hookInterpreterRejectionReason,
   interpreterBinary,
@@ -153,6 +154,17 @@ export function validateTechpackYaml(yamlContent: string): ValidationResult {
       (typeof comp.hookTimeout !== "number" || comp.hookTimeout <= 0)
     ) {
       errors.push(`Component '${id}': hookTimeout must be a positive integer`);
+    }
+
+    // mcs refuses a stray pluginSource while decoding, before ids are prefixed, and a bad one in
+    // validate(), after — hence the two spellings of the component.
+    if (comp.pluginSource !== undefined && comp.plugin === undefined) {
+      errors.push(`Component '${id}': pluginSource requires the plugin shorthand`);
+    }
+    const action = resolveInstallAction(comp);
+    if (action?.kind === "plugin" && action.source !== undefined) {
+      const reason = pluginSourceRejectionReason(action.source, action.name);
+      if (reason) errors.push(`Component '${identifier}.${id}': ${reason}`);
     }
 
     if (hookEvent && typeof comp.hookInterpreter === "string") {
@@ -732,7 +744,7 @@ type InstallAction =
   | { kind: "mcp"; name: string; command?: string; args?: string[] }
   | { kind: "copy"; source?: string; destination?: string; fileType?: string }
   | { kind: "settingsFile"; source: string }
-  | { kind: "plugin"; name: string };
+  | { kind: "plugin"; name: string; source?: string };
 
 interface HookInvocation {
   interpreter: string;
@@ -772,8 +784,8 @@ function mcpAction(config: Record<string, unknown>, id: unknown): InstallAction 
   return { kind: "mcp", name, command: optionalString(config.command), args };
 }
 
-function pluginAction(name: unknown): InstallAction | null {
-  return typeof name === "string" ? { kind: "plugin", name } : null;
+function pluginAction(name: unknown, source: unknown): InstallAction | null {
+  return typeof name === "string" ? { kind: "plugin", name, source: optionalString(source) } : null;
 }
 
 function settingsFileAction(source: unknown): InstallAction | null {
@@ -800,7 +812,7 @@ function resolveInstallAction(comp: Record<string, unknown>): InstallAction | nu
       case "mcp":
         return config && mcpAction(config, comp.id);
       case "plugin":
-        return pluginAction(value);
+        return pluginAction(value, comp.pluginSource);
       case "settingsFile":
         return settingsFileAction(value);
       default:
@@ -821,7 +833,7 @@ function resolveInstallAction(comp: Record<string, unknown>): InstallAction | nu
     case "settingsFile":
       return settingsFileAction(a.source);
     case "plugin":
-      return pluginAction(a.name);
+      return pluginAction(a.name, a.source);
     default:
       return null;
   }
@@ -845,10 +857,10 @@ function resolveComponent(comp: Record<string, unknown>): ResolvedComponent {
   return { comp, action, hook: { interpreter, explicit: explicit !== undefined, destination, source } };
 }
 
-export function declaredPluginNames(manifest: Record<string, unknown>): string[] {
+export function declaredPlugins(manifest: Record<string, unknown>): DeclaredPlugin[] {
   return records(manifest.components).flatMap((comp) => {
     const action = resolveInstallAction(comp);
-    return action?.kind === "plugin" ? [action.name] : [];
+    return action?.kind === "plugin" ? [{ name: action.name, source: action.source }] : [];
   });
 }
 
