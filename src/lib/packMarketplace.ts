@@ -8,7 +8,8 @@ export const PACK_MARKETPLACE_MANIFEST = ".claude-plugin/marketplace.json";
 const PACK_TOKEN = "pack";
 const PACK_MARKETPLACE_PREFIX = "mcs-";
 
-// Foundation's localizedDescription for every JSONSerialization failure; mcs prints it verbatim.
+// Foundation's localizedDescription for every JSONSerialization failure; mcs prints it verbatim, so
+// parity assumes mcs runs under an English locale.
 const UNPARSEABLE_JSON = "The data couldn’t be read because it isn’t in the correct format.";
 
 interface PluginRef {
@@ -17,7 +18,8 @@ interface PluginRef {
   marketplaceName: string | null;
 }
 
-// Swift `split(separator: "@", maxSplits: 1)` drops empty pieces, so `@pack` is a bare name, not a pack token.
+// Swift `split(separator: "@", maxSplits: 1)` drops empty pieces, so `@pack` is a bare name, not a pack token,
+// and `a@` stays the bare name `a@` — one piece keeps the full string.
 function parsePluginRef(fullName: string): PluginRef {
   const match = /^@*([^@]+)@(.+)$/s.exec(fullName);
   if (!match) return { bareName: fullName, marketplaceName: null };
@@ -57,6 +59,9 @@ export function resolveHostedPlugins(
 ): string[] | string {
   const names = hostedPluginNames(pluginNames);
   if (names.length === 0) return [];
+  // The tree lists a symlinked `.claude-plugin` as one blob with nothing under it, and the contents API
+  // cannot read through it; mcs follows the link, so a manifest behind one is left to mcs.
+  if (marketplaceJson === null && crossesSymlink(PACK_MARKETPLACE_MANIFEST, tree)) return [];
   const entries = marketplaceEntries(marketplaceJson);
   if (typeof entries === "string") return entries;
   const dirs: string[] = [];

@@ -537,6 +537,17 @@ console.log("\n=== Pack-hosted plugins (mcs#470): load errors and heuristics ===
   ]);
   eq("source through a symlink is left to mcs", errorsOf(
     pluginPack("tool@pack"), marketplace({ name: "tool", source: "./linked/sub" }), pluginTree([], [], ["linked"])), []);
+  eq("a truncated tree skips hosted-plugin resolution", verdictOf(evaluatePack(pluginPack("tool@pack"), null, null)), {
+    status: "active",
+    errors: [],
+    warnings: [TREE_UNAVAILABLE_WARNING],
+  });
+  eq("a symlinked .claude-plugin directory is left to mcs", errorsOf(
+    pluginPack("tool@pack"), null, tree(["plugin/x.md"], ["plugin"], [".claude-plugin"])), []);
+  eq("a symlinked marketplace.json is read like a file", errorsOf(
+    pluginPack("tool@pack"), marketplace({ name: "other", source: "./plugin" }), tree(["plugin/x.md"], [".claude-plugin", "plugin"], [".claude-plugin/marketplace.json"])), [
+    ".claude-plugin/marketplace.json lists no plugin named 'tool'",
+  ]);
   eq("hosted-plugin errors stop before missing-file checks", errorsOf(
     pluginPack("tool@pack", { skill: { source: "gone", destination: "s" } }), null), ["no .claude-plugin/marketplace.json in the pack"]);
 
@@ -551,7 +562,8 @@ console.log("\n=== Pack-hosted plugins (mcs#470): load errors and heuristics ===
     "plugins/other.md is not referenced by any component or template",
     IGNORE_HINT,
   ]);
-  for (const source of [".", "./"]) {
+  eq("'./a/..' keeps mcs's spelling, so the scans still run", warningsOf(nested, "./plugin/..").length, 5);
+  for (const source of [".", "./", "./."]) {
     eq(`H1: root source '${source}' skips both unreferenced scans`, warningsOf(nested, source), []);
   }
 }

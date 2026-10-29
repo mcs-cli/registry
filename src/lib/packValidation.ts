@@ -25,7 +25,8 @@ export const TREE_UNAVAILABLE_WARNING =
  *
  * `tree` is null only when GitHub truncated it; a failed fetch must never reach here, or a
  * transient outage would be recorded as a verdict. `marketplaceJson` is the pack's
- * `.claude-plugin/marketplace.json`, null when it has none.
+ * `.claude-plugin/marketplace.json`, null when it has none; `evaluateRepo` is what decides whether
+ * to fetch it, so passing null for a pack with `name@pack` plugins reports it missing.
  */
 export function evaluatePack(
   yamlContent: string | null,
