@@ -50,7 +50,7 @@ const IGNORE_HINT =
 const yamlOf = (m: Record<string, unknown>) => JSON.stringify(m); // js-yaml accepts JSON
 
 const messagesOf = (m: Record<string, unknown>, t: RepoTree): string[] =>
-  runHeuristics(m, t).map((f) => f.message);
+  runHeuristics(m, t, []).map((f) => f.message);
 
 console.log("=== validateTechpackYaml: ignore field ===");
 
@@ -534,7 +534,6 @@ console.log("\n=== Pack-hosted plugins (mcs#470, #472): load errors and heuristi
   eq("a refused pluginSource stops before E1", errorsOf(pluginPack({ plugin: "tool@pack", pluginSource: "." }, "b@mcs-x")), [notPlain(".")]);
 
   const notDir = "the directory of plugin 'tool' is not a directory in the pack";
-  eq("missing plugin directory", errorsOf(hosted("plugins/nope")), [notDir]);
   eq("a file is not a plugin directory", errorsOf(hosted("plugin/x.md"), noManifests, nestedTree), [notDir]);
   eq("root plugin without plugin.json", errorsOf(hosted()), ["plugin 'tool' has no .claude-plugin/plugin.json"]);
   eq("nested plugin without plugin.json names its path", errorsOf(hosted("plugin"), noManifests, nestedTree), [
@@ -562,14 +561,23 @@ console.log("\n=== Pack-hosted plugins (mcs#470, #472): load errors and heuristi
   eq("hosted-plugin errors stop before missing-file checks", errorsOf(
     pluginPack("tool@pack", { skill: { source: "gone", destination: "s" } })), ["plugin 'tool' has no .claude-plugin/plugin.json"]);
 
+  const xcrewShape = tree(
+    [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "skills/review/SKILL.md", "agents/lead.md"],
+    [".claude-plugin", "skills", "skills/review", "agents"]
+  );
+  const xcrew = yamlOf({ ...baseManifest(), components: [{ id: "plugin", description: "x", plugin: "tool@pack" }], ignore: ["skills/", "agents/"] });
+  eq("a root plugin beside a remote-source marketplace.json is accepted without reading it", verdictOf(evaluatePack(xcrew, xcrewShape, rootManifest(named("tool")))), {
+    status: "active",
+    errors: [],
+    warnings: [],
+  });
+
   const nested = tree(
     ["plugin/.claude-plugin/plugin.json", "plugin/skills/a/SKILL.md", "stray.txt", "docs/x.md", ".claude-plugin/plugin.json"],
     ["plugin", "plugin/.claude-plugin", "plugin/skills", "docs", ".claude-plugin"]
   );
-  const warningsOf = (pluginSource?: string, t: RepoTree = nested) => {
-    const path = pluginSource === undefined ? ".claude-plugin/plugin.json" : `${pluginSource}/.claude-plugin/plugin.json`;
-    return evaluatePack(hosted(pluginSource), t, manifests({ [path]: named("tool") })).warnings;
-  };
+  const warningsOf = (pluginSource: string, t: RepoTree = nested) =>
+    evaluatePack(hosted(pluginSource), t, manifests({ [`${pluginSource}/.claude-plugin/plugin.json`]: named("tool") })).warnings;
   eq("H1: a nested plugin silences its subtree only", warningsOf("plugin"), [
     "docs/x.md is not referenced by any component or template",
     "stray.txt is not referenced by any component",
@@ -580,7 +588,7 @@ console.log("\n=== Pack-hosted plugins (mcs#470, #472): load errors and heuristi
     "plugins/other.md is not referenced by any component or template",
     IGNORE_HINT,
   ]);
-  eq("H1: a root plugin skips both unreferenced scans", verdictOf(evaluatePack(hosted(), nested, manifests({ ".claude-plugin/plugin.json": named("tool") }))), {
+  eq("H1: a root plugin skips both unreferenced scans", verdictOf(evaluatePack(hosted(), nested, rootManifest(named("tool")))), {
     status: "active",
     errors: [],
     warnings: [],

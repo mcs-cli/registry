@@ -597,7 +597,7 @@ const IGNORE_HINT =
 // would flag legitimate tap packs forever and file a validation issue that `ignore:` cannot silence.
 // `pluginDirs` are the `name@pack` plugins' directories (see resolveHostedPlugins): Claude Code loads
 // everything under them, so none of it is an unreferenced file.
-export function runHeuristics(rawManifest: Record<string, unknown>, tree: RepoTree, pluginDirs: string[] = []): Finding[] {
+export function runHeuristics(rawManifest: Record<string, unknown>, tree: RepoTree, pluginDirs: string[]): Finding[] {
   const manifest = normalizedManifest(rawManifest);
   const components = records(manifest.components);
   const resolved = components.map(resolveComponent);

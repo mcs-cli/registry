@@ -2,7 +2,7 @@ import type { RepoTree } from "../types.js";
 
 // Mirrors mcs PackMarketplace (Sources/mcs/ExternalPack/PackMarketplace.swift), the parts of
 // PluginRef (Sources/mcs/Core/PluginRef.swift) that `name@pack` resolution reads, and
-// ExternalPackManifest.pluginSourceRejectionReason.
+// the free function pluginSourceRejectionReason in ExternalPackManifest.swift.
 
 const PACK_TOKEN = "pack";
 const PACK_MARKETPLACE_PREFIX = "mcs-";
@@ -41,7 +41,7 @@ function parsePluginRef(fullName: string): PluginRef {
 }
 
 /**
- * Mirrors ExternalPackManifest.pluginSourceRejectionReason: `.`, `./x` and `..` are refused rather
+ * Mirrors pluginSourceRejectionReason (ExternalPackManifest.swift): `.`, `./x` and `..` are refused rather
  * than normalised; leaving the key out is how a manifest names the pack root.
  */
 export function pluginSourceRejectionReason(source: string, pluginName: string): string | null {
@@ -71,13 +71,19 @@ export function reservedMarketplaceError(plugins: DeclaredPlugin[]): string | nu
 }
 
 /** The `name@pack` plugins, in declaration order, with the plugin.json each must ship. */
-export function hostedPlugins(plugins: DeclaredPlugin[]): HostedPlugin[] {
+function hostedPlugins(plugins: DeclaredPlugin[]): HostedPlugin[] {
   return plugins.flatMap(({ name, source }) => {
     const ref = parsePluginRef(name);
     if (ref.marketplaceName !== PACK_TOKEN) return [];
     const manifestPath = source === undefined ? PLUGIN_MANIFEST : `${source}/${PLUGIN_MANIFEST}`;
     return [{ bareName: ref.bareName, dir: source ?? ".", manifestPath }];
   });
+}
+
+/** The plugin.json files resolveHostedPlugins reads: those the tree lists, outside any symlink. */
+export function pluginManifestPaths(plugins: DeclaredPlugin[], tree: RepoTree): string[] {
+  const paths = new Set(hostedPlugins(plugins).map((p) => p.manifestPath));
+  return [...paths].filter((path) => tree.files.has(path) && !crossesSymlink(path, tree));
 }
 
 /**
@@ -106,8 +112,9 @@ function resolveError(
   pluginManifests: ReadonlyMap<string, string>,
   tree: RepoTree
 ): string | null {
-  // The tree cannot tell where a symlink points, so a plugin behind one is left to mcs.
-  if (crossesSymlink(dir, tree) || crossesSymlink(manifestPath, tree)) return null;
+  // The tree cannot tell where a symlink points, so a plugin behind one is left to mcs; the
+  // manifest path covers every prefix of the directory.
+  if (crossesSymlink(manifestPath, tree)) return null;
   if (dir !== "." && !tree.directories.has(dir)) {
     return `the directory of plugin '${bareName}' is not a directory in the pack`;
   }

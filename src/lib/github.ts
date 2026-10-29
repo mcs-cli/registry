@@ -130,7 +130,9 @@ export async function fetchRepoFile(
   path: string,
   token: string
 ): Promise<string | null> {
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`;
+  // A plugin directory named in techpack.yaml may contain `#`, `?` or `%`.
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}?ref=${branch}`;
   const response = await fetch(url, {
     headers: {
       Authorization: `token ${token}`,

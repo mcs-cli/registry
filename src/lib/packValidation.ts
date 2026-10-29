@@ -1,6 +1,6 @@
 import type { ExtractedPackData, RepoTree } from "../types.js";
 import { fetchRepoFile, fetchRepoTree, fetchTechpackYaml } from "./github.js";
-import { hostedPlugins, reservedMarketplaceError, resolveHostedPlugins, type DeclaredPlugin } from "./packMarketplace.js";
+import { pluginManifestPaths, reservedMarketplaceError, resolveHostedPlugins, type DeclaredPlugin } from "./packMarketplace.js";
 import { declaredPlugins, runHeuristics, validateFileReferences, validateTechpackYaml } from "./validator.js";
 
 export interface PackEvaluation {
@@ -40,13 +40,12 @@ export async function evaluateRepo(owner: string, repo: string, branch: string, 
   ]);
   const loaded = loadManifest(yamlContent);
   if ("verdict" in loaded) return loaded.verdict;
-  const paths = [...new Set(hostedPlugins(loaded.plugins).map((p) => p.manifestPath))]
-    .filter((path) => tree?.files.has(path));
-  const contents = await Promise.all(paths.map((path) => fetchRepoFile(owner, repo, branch, path, token)));
-  const pluginManifests = new Map<string, string>();
-  paths.forEach((path, i) => {
-    if (contents[i] !== null) pluginManifests.set(path, contents[i]);
-  });
+  const fetched = await Promise.all(
+    (tree ? pluginManifestPaths(loaded.plugins, tree) : []).map(
+      async (path) => [path, await fetchRepoFile(owner, repo, branch, path, token)] as const
+    )
+  );
+  const pluginManifests = new Map(fetched.filter((entry): entry is readonly [string, string] => entry[1] !== null));
   return evaluateLoaded(loaded, tree, pluginManifests);
 }
 
