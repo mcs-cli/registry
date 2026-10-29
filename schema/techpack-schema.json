@@ -145,7 +145,7 @@
         },
         "plugin": {
           "type": "string",
-          "description": "Shorthand: Plugin name (e.g., 'name@org/repo')."
+          "description": "Shorthand: Plugin name (e.g., 'name@org/repo', or 'name@pack' for a plugin the pack hosts in its own .claude-plugin/marketplace.json)."
         },
         "shell": {
           "type": "string",

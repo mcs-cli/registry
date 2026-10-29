@@ -40,9 +40,12 @@ function baseManifest(extra: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
-function tree(files: string[], dirs: string[] = []): RepoTree {
-  return { files: new Set(files), directories: new Set(dirs) };
+function tree(files: string[], dirs: string[] = [], symlinks: string[] = []): RepoTree {
+  return { files: new Set([...files, ...symlinks]), directories: new Set(dirs), symlinks: new Set(symlinks) };
 }
+
+const IGNORE_HINT =
+  "Add intentional non-material paths (docs/, examples/, assets) to the `ignore:` field in techpack.yaml to silence these warnings.";
 
 const yamlOf = (m: Record<string, unknown>) => JSON.stringify(m); // js-yaml accepts JSON
 
@@ -209,7 +212,7 @@ console.log("\n=== Robustness ===");
   const t = tree(files, ["hooks", "extras", "extras/nested"]);
   eq("nested directory reported once, then the ignore hint", messagesOf(m, t), [
     "extras/nested is not referenced by any component or template",
-    "Add intentional non-material paths (docs/, examples/, assets) to the `ignore:` field in techpack.yaml to silence these warnings.",
+    IGNORE_HINT,
   ]);
 }
 {
@@ -434,21 +437,21 @@ const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
 
 {
   const t = tree(["skills/s/SKILL.md", "skills/s/LICENSE", "skills/s/README.md"], ["skills", "skills/s"]);
-  eq("LICENSE and README inside a skill directory are not reported", verdictOf(evaluatePack(skillPack("skills/s"), t)), {
+  eq("LICENSE and README inside a skill directory are not reported", verdictOf(evaluatePack(skillPack("skills/s"), t, null)), {
     status: "active",
     errors: [],
     warnings: [],
   });
 }
 {
-  const r = evaluatePack(skillPack("."), tree(["SKILL.md"]));
+  const r = evaluatePack(skillPack("."), tree(["SKILL.md"]), null);
   eq("source '.' is an error", r.status, "invalid");
   eq("source '.' uses mcs wording", r.errors, [
     "Component 'test.s' uses source '.' which copies the entire pack root (including techpack.yaml, LICENSE, README)",
   ]);
 }
 {
-  const r = evaluatePack(skillPack("skills/missing", { ignore: ["docs/"] }), tree(["docs/x.md", "stray.txt"], ["docs"]));
+  const r = evaluatePack(skillPack("skills/missing", { ignore: ["docs/"] }), tree(["docs/x.md", "stray.txt"], ["docs"]), null);
   eq("missing source stops before heuristics", verdictOf(r), {
     status: "invalid",
     errors: ["Component 's' source 'skills/missing' not found in repository"],
@@ -456,19 +459,19 @@ const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
   });
 }
 {
-  const r = evaluatePack(yamlOf(baseManifest({ templates: [{ sectionIdentifier: "t", contentFile: "t.md" }] })), tree(["hooks/handler.sh"], ["hooks"]));
+  const r = evaluatePack(yamlOf(baseManifest({ templates: [{ sectionIdentifier: "t", contentFile: "t.md" }] })), tree(["hooks/handler.sh"], ["hooks"]), null);
   eq("missing template content file is an error", r.errors, ["Template 't' contentFile 't.md' not found in repository"]);
 }
 {
   const configureOnly = yamlOf({ ...baseManifest(), components: undefined, configureProject: { script: "configure.sh" } });
-  const r = evaluatePack(configureOnly, tree(["configure.sh"]));
+  const r = evaluatePack(configureOnly, tree(["configure.sh"]), null);
   eq("configure-only pack accepted", [r.status, r.errors], ["active", []]);
-  const empty = evaluatePack(yamlOf({ ...baseManifest(), components: [] }), tree([]));
+  const empty = evaluatePack(yamlOf({ ...baseManifest(), components: [] }), tree([]), null);
   eq("empty pack is an error", empty.errors, ["Pack has no components, templates, or configure script — nothing to install"]);
 }
 {
   const settings = yamlOf(baseManifest({ components: [{ id: "cfg", description: "x", settingsFile: "config/settings.json" }] }));
-  eq("missing settings file is an error", evaluatePack(settings, tree([])).errors, [
+  eq("missing settings file is an error", evaluatePack(settings, tree([]), null).errors, [
     "Component 'test.cfg' references settings file 'config/settings.json' which does not exist",
   ]);
 }
@@ -482,9 +485,75 @@ const skillPack = (source: string, extra: Record<string, unknown> = {}) =>
   eq("python -m module directory present", messagesOf(m, tree(["my_server/__init__.py"], ["my_server"])).filter((h) => h.startsWith("MCP")), []);
 }
 {
-  const r = evaluatePack(yamlOf(baseManifest()), null);
+  const r = evaluatePack(yamlOf(baseManifest()), null, null);
   eq("truncated tree skips file checks with one warning", [r.status, r.warnings], ["active", [TREE_UNAVAILABLE_WARNING]]);
-  eq("missing techpack.yaml", evaluatePack(null, tree([])).errors, ["No techpack.yaml found at the repository root"]);
+  eq("missing techpack.yaml", evaluatePack(null, tree([]), null).errors, ["No techpack.yaml found at the repository root"]);
+}
+
+console.log("\n=== Pack-hosted plugins (mcs#470): load errors and heuristics ===");
+
+{
+  const pluginPack = (...plugins: Array<string | Record<string, unknown>>) =>
+    yamlOf(withComps(...plugins.map((p, i) => ({ id: `p${i}`, description: "x", ...(typeof p === "string" ? { plugin: p } : p) }))));
+  const marketplace = (...plugins: unknown[]) => JSON.stringify({ name: "m", plugins });
+  const pluginTree = (files: string[] = [], dirs: string[] = [], symlinks: string[] = []) =>
+    tree([".claude-plugin/marketplace.json", ...files], [".claude-plugin", ...dirs], symlinks);
+  const defaultTree = pluginTree(["plugin/x.md"], ["plugin"]);
+  const errorsOf = (yaml: string, json: string | null, t: RepoTree = defaultTree) => evaluatePack(yaml, t, json).errors;
+  const warningsOf = (t: RepoTree, source: string) =>
+    evaluatePack(pluginPack("tool@pack"), t, marketplace({ name: "tool", source })).warnings;
+
+  const reserved = (name: string, bare: string) =>
+    `plugin '${name}': marketplaces named 'mcs-…' are reserved for mcs; use '${bare}@pack' for a plugin this pack hosts`;
+  eq("E1: mcs- marketplace is reserved", errorsOf(pluginPack("tool@mcs-other"), null), [reserved("tool@mcs-other", "tool")]);
+  eq("E1 runs before @pack resolution and without a tree", evaluatePack(pluginPack("a@pack", "b@mcs-x"), null, null).errors, [
+    reserved("b@mcs-x", "b"),
+  ]);
+  eq("E1 ignores an mcs- repo reference", errorsOf(pluginPack("tool@mcs-org/repo"), null), []);
+  eq("installAction plugin form is read too", errorsOf(pluginPack({ type: "plugin", installAction: { type: "plugin", name: "t@mcs-x" } }), null), [
+    reserved("t@mcs-x", "t"),
+  ]);
+
+  eq("name@Pack, name@pack/x and @pack are not pack tokens", errorsOf(pluginPack("a@Pack", "b@pack/x", "@pack"), null), []);
+  eq("E2a: no marketplace.json", errorsOf(pluginPack("tool@pack"), null), ["no .claude-plugin/marketplace.json in the pack"]);
+  eq("E2a fires once for several @pack plugins", errorsOf(pluginPack("a@pack", "b@pack"), null).length, 1);
+  const unparseable = ".claude-plugin/marketplace.json could not be read: The data couldn’t be read because it isn’t in the correct format.";
+  eq("E2b: not JSON", errorsOf(pluginPack("tool@pack"), "{"), [unparseable]);
+  eq("E2b: top-level scalar is unparseable, as in JSONSerialization", errorsOf(pluginPack("tool@pack"), "5"), [unparseable]);
+  const shape = ".claude-plugin/marketplace.json could not be read: expected an object with a `plugins` list";
+  eq("E2b: no plugins list", errorsOf(pluginPack("tool@pack"), "{}"), [shape]);
+  eq("E2b: plugins entry not an object", errorsOf(pluginPack("tool@pack"), JSON.stringify({ plugins: [1] })), [shape]);
+  eq("E2c: not listed", errorsOf(pluginPack("tool@pack"), marketplace({ name: "other", source: "./plugin" })), [
+    ".claude-plugin/marketplace.json lists no plugin named 'tool'",
+  ]);
+  const notLocal = `plugin 'tool' in .claude-plugin/marketplace.json needs a relative \`source\` such as "./"`;
+  eq("E2d: object source", errorsOf(pluginPack("tool@pack"), marketplace({ name: "tool", source: { source: "github", repo: "a/b" } })), [notLocal]);
+  eq("E2d: bare relative source", errorsOf(pluginPack("tool@pack"), marketplace({ name: "tool", source: "plugin" })), [notLocal]);
+  eq("E2e: .. escapes the pack", errorsOf(pluginPack("tool@pack"), marketplace({ name: "tool", source: "./plugin/../.." })), [
+    "the source of plugin 'tool' in .claude-plugin/marketplace.json points outside the pack",
+  ]);
+  eq("E2f: a file is not a directory", errorsOf(pluginPack("tool@pack"), marketplace({ name: "tool", source: "./plugin/x.md" })), [
+    "the source of plugin 'tool' in .claude-plugin/marketplace.json is not a directory in the pack",
+  ]);
+  eq("source through a symlink is left to mcs", errorsOf(
+    pluginPack("tool@pack"), marketplace({ name: "tool", source: "./linked/sub" }), pluginTree([], [], ["linked"])), []);
+  eq("hosted-plugin errors stop before missing-file checks", errorsOf(
+    pluginPack("tool@pack", { skill: { source: "gone", destination: "s" } }), null), ["no .claude-plugin/marketplace.json in the pack"]);
+
+  const nested = pluginTree(["plugin/skills/a/SKILL.md", "plugin/hooks/h.sh", "stray.txt", "docs/x.md"], ["plugin", "plugin/skills", "plugin/hooks", "docs"]);
+  eq("H1: nested ./plugin silences its subtree only", warningsOf(nested, "./plugin"), [
+    "docs/x.md is not referenced by any component or template",
+    "stray.txt is not referenced by any component",
+    IGNORE_HINT,
+  ]);
+  const deep = pluginTree(["plugins/tool/a.md", "plugins/other.md"], ["plugins", "plugins/tool"]);
+  eq("H1: parent of a plugin directory is skipped, a sibling is not", warningsOf(deep, "./plugins/tool"), [
+    "plugins/other.md is not referenced by any component or template",
+    IGNORE_HINT,
+  ]);
+  for (const source of [".", "./"]) {
+    eq(`H1: root source '${source}' skips both unreferenced scans`, warningsOf(nested, source), []);
+  }
 }
 
 console.log("\n=== GitHubApiError: only an exhausted token aborts a run ===");

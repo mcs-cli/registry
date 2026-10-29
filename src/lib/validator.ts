@@ -583,13 +583,15 @@ const IGNORE_HINT =
 // Mirrors mcs PackHeuristics.check (Sources/mcs/ExternalPack/PackHeuristics.swift), check for check
 // and in its order. checkThirdPartyTaps is left out on purpose: it is CLI-only advice, and here it
 // would flag legitimate tap packs forever and file a validation issue that `ignore:` cannot silence.
-export function runHeuristics(rawManifest: Record<string, unknown>, tree: RepoTree): Finding[] {
+// `pluginDirs` are the `name@pack` plugins' directories (see resolveHostedPlugins): Claude Code loads
+// everything under them, so none of it is an unreferenced file.
+export function runHeuristics(rawManifest: Record<string, unknown>, tree: RepoTree, pluginDirs: string[] = []): Finding[] {
   const manifest = normalizedManifest(rawManifest);
   const components = records(manifest.components);
   const resolved = components.map(resolveComponent);
   const brewPackages = collectBrewPackages(resolved);
   const doctorChecks = allDoctorChecks(manifest);
-  const unreferenced = checkUnreferencedPaths(manifest, tree);
+  const unreferenced = checkUnreferencedPaths(manifest, tree, pluginDirs);
 
   const findings: Finding[] = [
     ...checkEmptyPack(manifest),
@@ -672,7 +674,8 @@ function listShallowChildren(tree: RepoTree): Map<string, string[]> {
 
 // Mirrors PackHeuristics.checkUnreferencedFiles then checkRootLevelContentFiles: one level into each
 // top-level directory, so a nested directory is reported once rather than file by file.
-function checkUnreferencedPaths(manifest: Record<string, unknown>, tree: RepoTree): Finding[] {
+function checkUnreferencedPaths(manifest: Record<string, unknown>, tree: RepoTree, pluginDirs: string[]): Finding[] {
+  if (pluginDirs.includes(".")) return [];
   const referenced = collectReferencedPaths(manifest);
   const ignored = ignoreMatcherFor(manifest);
   const children = listShallowChildren(tree);
@@ -683,6 +686,7 @@ function checkUnreferencedPaths(manifest: Record<string, unknown>, tree: RepoTre
     if (!tree.directories.has(dir) || BUILTIN_IGNORED_DIRS.has(dir) || ignored(dir)) continue;
     for (const item of children.get(dir) ?? []) {
       if (referenced.has(item) || ignored(item)) continue;
+      if (pluginDirs.some((d) => item === d || item.startsWith(`${d}/`) || d.startsWith(`${item}/`))) continue;
       findings.push(warning(`${item} is not referenced by any component or template`));
     }
   }
@@ -727,7 +731,8 @@ type InstallAction =
   | { kind: "brew"; package: string }
   | { kind: "mcp"; name: string; command?: string; args?: string[] }
   | { kind: "copy"; source?: string; destination?: string; fileType?: string }
-  | { kind: "settingsFile"; source: string };
+  | { kind: "settingsFile"; source: string }
+  | { kind: "plugin"; name: string };
 
 interface HookInvocation {
   interpreter: string;
@@ -767,6 +772,10 @@ function mcpAction(config: Record<string, unknown>, id: unknown): InstallAction 
   return { kind: "mcp", name, command: optionalString(config.command), args };
 }
 
+function pluginAction(name: unknown): InstallAction | null {
+  return typeof name === "string" ? { kind: "plugin", name } : null;
+}
+
 function settingsFileAction(source: unknown): InstallAction | null {
   return typeof source === "string" ? { kind: "settingsFile", source } : null;
 }
@@ -790,6 +799,8 @@ function resolveInstallAction(comp: Record<string, unknown>): InstallAction | nu
         return brewAction(value);
       case "mcp":
         return config && mcpAction(config, comp.id);
+      case "plugin":
+        return pluginAction(value);
       case "settingsFile":
         return settingsFileAction(value);
       default:
@@ -809,6 +820,8 @@ function resolveInstallAction(comp: Record<string, unknown>): InstallAction | nu
       return copyAction(a, optionalString(a.fileType));
     case "settingsFile":
       return settingsFileAction(a.source);
+    case "plugin":
+      return pluginAction(a.name);
     default:
       return null;
   }
@@ -830,6 +843,13 @@ function resolveComponent(comp: Record<string, unknown>): ResolvedComponent {
   const explicit = optionalString(comp.hookInterpreter);
   const interpreter = resolveHookInterpreter(explicit, destination, source);
   return { comp, action, hook: { interpreter, explicit: explicit !== undefined, destination, source } };
+}
+
+export function declaredPluginNames(manifest: Record<string, unknown>): string[] {
+  return records(manifest.components).flatMap((comp) => {
+    const action = resolveInstallAction(comp);
+    return action?.kind === "plugin" ? [action.name] : [];
+  });
 }
 
 function allDoctorChecks(manifest: Record<string, unknown>): Array<Record<string, unknown>> {
