@@ -145,7 +145,11 @@
         },
         "plugin": {
           "type": "string",
-          "description": "Shorthand: Plugin name (e.g., 'name@org/repo')."
+          "description": "Shorthand: Plugin name (e.g., 'name@org/repo', or 'name@pack' for a plugin the pack hosts)."
+        },
+        "pluginSource": {
+          "type": "string",
+          "description": "Directory of a 'name@pack' plugin inside the pack (e.g., 'plugins/name'), holding its .claude-plugin/plugin.json. Omit for the pack root."
         },
         "shell": {
           "type": "string",

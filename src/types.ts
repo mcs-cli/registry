@@ -50,6 +50,8 @@ export interface ValidationResult {
 export interface RepoTree {
   files: Set<string>;
   directories: Set<string>;
+  /** Also listed in `files`: the tree API reports a symlink as a blob and cannot tell what it points to. */
+  symlinks: Set<string>;
 }
 
 export interface ExtractedPackData {

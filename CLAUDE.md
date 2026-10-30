@@ -28,12 +28,13 @@ _worker.ts              → routes API traffic, falls back to env.ASSETS.fetch()
 src/api/packs.ts        → GET /api/packs, GET /api/packs/github/:owner/:repo
 src/api/submit.ts       → POST /api/submit (Turnstile + honeypot + IP rate-limit)
 src/api/reindex.ts      → POST /api/reindex (auth required, batch GitHub GraphQL) — metadata only
-src/lib/github.ts       → GitHub API helpers (GraphQL batch metadata, REST yaml fetch)
+src/lib/github.ts       → GitHub API helpers (GraphQL batch metadata, REST file fetch, tree with symlinks)
 src/lib/packValidation.ts → evaluatePack()/evaluateRepo(): the one verdict (status, errors, warnings) submit and scripts/validate.ts record
 src/lib/packIndex.ts    → reconcileIndex(): keeps index:all in step with a written pack
 src/lib/validator.ts    → Manual techpack.yaml validation + PackHeuristics port (Ajv cannot be used in Workers)
 src/lib/glob.ts         → POSIX fnmatch + dir/ shortcut — mirrors mcs Sources/mcs/Core/GlobMatcher.swift
 src/lib/builtinIgnore.ts→ BUILTIN_IGNORED_DIRS + BUILTIN_INFRASTRUCTURE_FILES — mirror mcs PackHeuristics.swift
+src/lib/packMarketplace.ts → `name@pack` plugins: pluginSource rule, reserved `mcs-` marketplaces, plugin.json checks — mirrors mcs PackMarketplace.swift
 src/lib/turnstile.ts    → Cloudflare Turnstile verification
 public/                 → Static frontend (vanilla JS, no framework)
 public/_worker.js       → BUILD ARTIFACT (gitignored, esbuild output)
@@ -68,8 +69,8 @@ All routing is manual string matching in `_worker.ts → handleApiRoute()`.
 ## Key Gotchas
 
 - **Ajv is banned** — Workers block `new Function()`. Validation is manual in `src/lib/validator.ts`. The JSON Schema file exists for documentation only.
-- **`validator.ts`, `glob.ts` and `builtinIgnore.ts` mirror mcs verbatim** — registry/CLI parity is the contract. `runHeuristics` follows `PackHeuristics.check` check for check, with the same severities and wording, and the file-reference checks follow the mcs loader, so heuristics and file checks give the verdict `mcs pack validate` gives. The structural layer (`validateTechpackYaml` vs `ExternalPackManifest.validate()`) is a known gap in both directions, tracked in #14. Findings name components and templates `<identifier>.<id>`, as mcs does after `normalized()`. The one deliberate exception is mcs's third-party-tap warning, which is CLI-only (see the comment on `checkThirdPartyTaps` in mcs) and must not be ported. The matcher must not gain `**` support and the built-in sets are exact strings (not globs). Any drift means `mcs pack validate` and the registry website disagree on the same pack.
-- **Known parity gap: symlinks.** mcs follows them on disk; the GitHub tree lists every symlink as a blob, so a root symlink to a directory (or a dangling one) can be reported differently. Submodules are treated as empty directories, as in mcs's `--depth 1` clone.
+- **`validator.ts`, `glob.ts`, `builtinIgnore.ts` and `packMarketplace.ts` mirror mcs verbatim** — registry/CLI parity is the contract. `runHeuristics` follows `PackHeuristics.check` check for check, with the same severities and wording, and the file-reference checks follow the mcs loader, so heuristics and file checks give the verdict `mcs pack validate` gives. The structural layer (`validateTechpackYaml` vs `ExternalPackManifest.validate()`) is a known gap in both directions, tracked in #14. Findings name components and templates `<identifier>.<id>`, as mcs does after `normalized()`. The one deliberate exception is mcs's third-party-tap warning, which is CLI-only (see the comment on `checkThirdPartyTaps` in mcs) and must not be ported. The matcher must not gain `**` support and the built-in sets are exact strings (not globs). Any drift means `mcs pack validate` and the registry website disagree on the same pack.
+- **Known parity gap: symlinks.** mcs follows them on disk; the GitHub tree lists every symlink as a blob, so a root symlink to a directory (or a dangling one) can be reported differently, and an `@pack` plugin whose plugin.json path crosses a symlink is left unchecked. The registry also validates the default branch, while mcs uses the pack's pinned `ref:`. Submodules are treated as empty directories, as in mcs's `--depth 1` clone.
 - **`public/_worker.js` is gitignored** — must be built before deploy. If API routes return HTML instead of JSON, the Worker wasn't bundled.
 - **esbuild flags matter** — `--platform=browser` (not `neutral`) and `--conditions=workerd,worker,browser` are required.
 - **`wrangler kv` defaults to local** — always pass `--remote` for production KV operations.

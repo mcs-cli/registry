@@ -119,7 +119,20 @@ export async function fetchTechpackYaml(
   branch: string,
   token: string
 ): Promise<string | null> {
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/techpack.yaml?ref=${branch}`;
+  return fetchRepoFile(owner, repo, branch, "techpack.yaml", token);
+}
+
+/** Null only on 404; any other failure throws. */
+export async function fetchRepoFile(
+  owner: string,
+  repo: string,
+  branch: string,
+  path: string,
+  token: string
+): Promise<string | null> {
+  // A plugin directory named in techpack.yaml may contain `#`, `?` or `%`.
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}?ref=${branch}`;
   const response = await fetch(url, {
     headers: {
       Authorization: `token ${token}`,
@@ -129,7 +142,7 @@ export async function fetchTechpackYaml(
   });
 
   if (response.status === 404) return null;
-  if (!response.ok) throw new GitHubApiError(response, `repos/${owner}/${repo}/contents/techpack.yaml`);
+  if (!response.ok) throw new GitHubApiError(response, `repos/${owner}/${repo}/contents/${path}`);
   return response.text();
 }
 
@@ -162,18 +175,22 @@ export async function fetchRepoTree(
 
   const files = new Set<string>();
   const directories = new Set<string>();
+  const symlinks = new Set<string>();
 
   for (const entry of json.tree) {
     if (entry.type === "blob") {
       files.add(entry.path);
+      if (entry.mode === SYMLINK_MODE) symlinks.add(entry.path);
     } else if (entry.type === "tree" || entry.type === "commit") {
       // A submodule is a directory in the checkout mcs validates.
       directories.add(entry.path);
     }
   }
 
-  return { files, directories };
+  return { files, directories, symlinks };
 }
+
+const SYMLINK_MODE = "120000";
 
 // -- Internal types --
 

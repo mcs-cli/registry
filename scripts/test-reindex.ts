@@ -8,7 +8,8 @@
 import { handleReindex, reindexSinglePack } from "../src/api/reindex.js";
 import { handleGetPack, handleUpdatePackStatus } from "../src/api/packs.js";
 import { reconcileIndex } from "../src/lib/packIndex.js";
-import { batchFetchRepoMetadata, fetchTechpackYaml } from "../src/lib/github.js";
+import { batchFetchRepoMetadata, fetchRepoTree, fetchTechpackYaml } from "../src/lib/github.js";
+import { evaluateRepo } from "../src/lib/packValidation.js";
 import type { Env, PackEntry } from "../src/types.js";
 
 let pass = 0;
@@ -251,6 +252,53 @@ console.log("\n=== fetchTechpackYaml ===");
   eq("404 means no manifest", await fetchTechpackYaml("a", "b", "main", "t"), null);
   stubFetch(() => new Response("", { status: 500 }));
   await throws("any other failure throws", () => fetchTechpackYaml("a", "b", "main", "t"));
+}
+
+console.log("\n=== fetchRepoTree: symlinks ===");
+{
+  stubFetch(() => json({
+    truncated: false,
+    tree: [
+      { path: "plugin", mode: "040000", type: "tree" },
+      { path: "linked", mode: "120000", type: "blob" },
+      { path: "plugin/a.md", mode: "100644", type: "blob" },
+    ],
+  }));
+  const t = await fetchRepoTree("a", "b", "main", "t");
+  eq("a mode-120000 blob is a file and a symlink", [[...t!.files], [...t!.symlinks]], [["linked", "plugin/a.md"], ["linked"]]);
+}
+
+console.log("\n=== evaluateRepo: plugin.json is fetched only for @pack plugins ===");
+{
+  const treeWithPlugin = () => json({
+    truncated: false,
+    tree: [
+      { path: "plugin", mode: "040000", type: "tree" },
+      { path: "plugin/.claude-plugin", mode: "040000", type: "tree" },
+      { path: "plugin/.claude-plugin/plugin.json", mode: "100644", type: "blob" },
+    ],
+  });
+  const manifest = (component: Record<string, unknown>) => JSON.stringify({
+    schemaVersion: 1, identifier: "p", displayName: "P", description: "d",
+    components: [{ id: "c", description: "x", ...component }],
+  });
+  const run = async (component: Record<string, unknown>) => {
+    const fetched: string[] = [];
+    stubFetch((url) => {
+      fetched.push(new URL(url).pathname);
+      if (url.includes("/git/trees/")) return treeWithPlugin();
+      if (url.includes("/contents/techpack.yaml")) return new Response(manifest(component));
+      return new Response(JSON.stringify({ name: "tool" }));
+    });
+    const { status, errors } = await evaluateRepo("a", "b", "main", "t");
+    return { status, errors, pluginJsonFetched: fetched.includes("/repos/a/b/contents/plugin/.claude-plugin/plugin.json") };
+  };
+  eq("@pack plugin reads its plugin.json", await run({ plugin: "tool@pack", pluginSource: "plugin" }), {
+    status: "active", errors: [], pluginJsonFetched: true,
+  });
+  eq("marketplace plugin skips the fetch", await run({ plugin: "tool@org/repo" }), {
+    status: "active", errors: [], pluginJsonFetched: false,
+  });
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);
